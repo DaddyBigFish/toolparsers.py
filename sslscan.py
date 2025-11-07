@@ -7,7 +7,7 @@ from rich.table import Table
 from datetime import datetime, timezone
 
 if len(sys.argv) < 2:
-    print("Usage: python3 sslscan.py <xml_file> [--basic] [--expired] [--ips] [--weak]")
+    print("Usage: python3 sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips]")
     sys.exit(1)
 
 filename = sys.argv[1]
