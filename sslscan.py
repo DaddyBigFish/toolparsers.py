@@ -7,13 +7,14 @@ from rich.table import Table
 from datetime import datetime, timezone
 
 if len(sys.argv) < 2:
-    print("Usage: python3 sslscan.py <xml_file> [--basic] [--expired] [--ips]")
+    print("Usage: python3 sslscan.py <xml_file> [--basic] [--expired] [--ips] [--weak]")
     sys.exit(1)
 
 filename = sys.argv[1]
 basic_mode = "--basic" in sys.argv
 expired_mode = "--expired" in sys.argv
 ips_mode = "--ips" in sys.argv
+weak_mode = "--weak" in sys.argv
 
 try:
     tree = ET.parse(filename)
@@ -136,15 +137,33 @@ def is_expired(date_str):
     except:
         return False
 
-# --ips mode: just list IP:port (hostname)
+def has_weak_cipher(cipher_lines):
+    weak = []
+    for line in cipher_lines:
+        if " bits " in line:
+            try:
+                bits = int(line.split(" bits ")[0].split()[-1])
+                if bits < 128:
+                    weak.append(line)
+            except:
+                continue
+    return weak
+
+# --ips mode
 if ips_mode:
     for test in root.findall("ssltest"):
         ip = test.get("host", "")
         xml_port = test.get("port", "")
-        if expired_mode:
-            _, _, not_after = extract_sections(test)
-            if not is_expired(not_after):
+        _, sections, not_after = extract_sections(test)
+
+        # Apply filters
+        if expired_mode and not is_expired(not_after):
+            continue
+        if weak_mode:
+            weak_ciphers = has_weak_cipher(sections.get("Supported Ciphers", []))
+            if not weak_ciphers:
                 continue
+
         hostname = get_hostname(ip)
         display = f"{ip}:{xml_port}" if xml_port else ip
         if hostname:
@@ -159,9 +178,17 @@ if basic_mode:
         hostname = get_hostname(ip)
         display_ip = f"{ip} ({hostname})" if hostname else ip
 
-        if expired_mode:
-            if not is_expired(not_after):
+        # Apply filters
+        if expired_mode and not is_expired(not_after):
+            continue
+        if weak_mode:
+            weak_ciphers = has_weak_cipher(sections.get("Supported Ciphers", []))
+            if not weak_ciphers:
                 continue
+            # Replace full ciphers with only weak ones
+            sections["Supported Ciphers"] = weak_ciphers
+
+        if expired_mode:
             print(f"{display_ip}")
             print("SSL Certificate:")
             for line in sections.get("SSL Certificate", []):
@@ -186,9 +213,17 @@ else:
         hostname = get_hostname(ip)
         display_ip = f"{ip} ({hostname})" if hostname else ip
 
-        if expired_mode:
-            if not is_expired(not_after):
+        # Apply filters
+        if expired_mode and not is_expired(not_after):
+            continue
+        if weak_mode:
+            weak_ciphers = has_weak_cipher(sections.get("Supported Ciphers", []))
+            if not weak_ciphers:
                 continue
+            # Show only weak ciphers
+            sections["Supported Ciphers"] = weak_ciphers
+
+        if expired_mode:
             cert_val = "\n".join(sections.get("SSL Certificate", []))
             if cert_val:
                 table.add_row(display_ip, "SSL Certificate", cert_val)
