@@ -7,7 +7,9 @@ from rich.table import Table
 from datetime import datetime, timezone
 
 if len(sys.argv) < 2:
-    print("Usage: python3 sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips]")
+    print("Output: sslscan --xml=data_ssl_tls https://target/")
+    print("Output: sslscan --xml=data_ssl_tls --targets=hosts_port_443")
+    print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips]")
     sys.exit(1)
 
 filename = sys.argv[1]
