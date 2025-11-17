@@ -46,38 +46,58 @@ def get_hostname(ip):
     except:
         return ""
 
-def print_basic(hosts_data):
+def print_basic(hosts_data, exhosts, target_ports):
     for host, entries in sorted(hosts_data.items(), key=lambda x: ipaddress.ip_address(x[0])):
         hostname = get_hostname(host)
+        if hostname and any(ex in hostname for ex in exhosts):
+            continue
         header = f"{host} {hostname}".strip()
         print(header)
         for portid, service in sorted(entries, key=lambda x: int(x[0])):
             print(f"{portid}/{service}")
         print()
 
-def print_table(hosts_data):
+def print_table(hosts_data, exhosts):
     console = Console()
     table = Table(header_style="bold magenta", show_lines=True)
     table.add_column("HOST", style="cyan", no_wrap=True)
     table.add_column("PORTS", style="green")
     table.add_column("SERVICES", style="yellow")
     for host, entries in sorted(hosts_data.items(), key=lambda x: ipaddress.ip_address(x[0])):
+        hostname = get_hostname(host)
+        if hostname and any(ex in hostname for ex in exhosts):
+            continue
         entries_sorted = sorted(entries, key=lambda x: int(x[0]))
         ports_str = "\n".join(p for p, _ in entries_sorted)
         services_str = "\n".join(s for _, s in entries_sorted)
         table.add_row(host, ports_str, services_str)
     console.print(table)
 
-def print_ips_only(hosts_data):
+def print_ips_only(hosts_data, exhosts, target_ports):
     for host in sorted(hosts_data.keys(), key=ipaddress.ip_address):
         hostname = get_hostname(host)
-        print(f"{host} ({hostname})" if hostname else host)
+        if hostname and any(ex in hostname for ex in exhosts):
+            continue
+        
+        if target_ports:
+            open_target_ports = sorted([p for p, _ in hosts_data[host] if p in target_ports], key=int)
+            if open_target_ports:
+                port_str = ",".join(open_target_ports)
+                out = f"{host}:{port_str}"
+            else:
+                out = host
+        else:
+            out = host
+            
+        hostname_part = f" ({hostname})" if hostname else ""
+        print(out + hostname_part)
 
 if __name__ == "__main__":
     basic = "--basic" in sys.argv
     ips_only = "--ips" in sys.argv
     target_arg = None
     target_ports = None
+    exhost_arg = None
     i = 1
     while i < len(sys.argv):
         arg = sys.argv[i]
@@ -86,10 +106,14 @@ if __name__ == "__main__":
         elif arg == "-p" and i+1 < len(sys.argv):
             target_ports = set(sys.argv[i+1].split(","))
             i += 1
+        elif arg == "--exhost" and i+1 < len(sys.argv):
+            exhost_arg = sys.argv[i+1]
+            i += 1
         elif not arg.startswith("-"):
             target_arg = arg
             break
         i += 1
+
     target_ips = None
     if target_arg:
         if os.path.isfile(target_arg):
@@ -97,11 +121,14 @@ if __name__ == "__main__":
                 target_ips = {line.strip() for line in f if line.strip()}
         else:
             target_ips = {target_arg}
+
     hosts = parse_gnmap_files(target_ips, target_ports)
+    exhosts = [ex.strip() for ex in exhost_arg.split(",")] if exhost_arg else []
+
     if hosts:
         if ips_only:
-            print_ips_only(hosts)
+            print_ips_only(hosts, exhosts, target_ports)
         elif basic:
-            print_basic(hosts)
+            print_basic(hosts, exhosts, target_ports)
         else:
-            print_table(hosts)
+            print_table(hosts, exhosts)
