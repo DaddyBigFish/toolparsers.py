@@ -17,6 +17,7 @@ weak_mode = False
 selfsigned_mode = False
 selfsigned_issuer = None
 selfsigned_subject = None
+tls_filter = None
 
 i = 1
 while i < len(sys.argv):
@@ -43,15 +44,22 @@ while i < len(sys.argv):
         else:
             print("Error: --selfsigned requires at least one value")
             sys.exit(1)
+    elif arg == "--tls":
+        i += 1
+        if i < len(sys.argv):
+            tls_filter = set(v.strip() for v in sys.argv[i].replace(" ", "").split(",") if v.strip())
+        else:
+            print("Error: --tls requires versions")
+            sys.exit(1)
     elif filename is None:
         filename = arg
     else:
-        print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]]")
+        print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]] [--tls 1.0,1.1]")
         sys.exit(1)
     i += 1
 
 if filename is None:
-    print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]]")
+    print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]] [--tls 1.0,1.1]")
     sys.exit(1)
 
 try:
@@ -76,6 +84,15 @@ def should_exclude(hostname):
         return False
     return (hostname == current_hostname or hostname.split('.')[0] == current_hostname.split('.')[0])
 
+def has_tls_version(test):
+    if not tls_filter:
+        return True
+    for p in test.findall("protocol"):
+        if p.get("type", "").upper() == "TLS" and p.get("enabled") == "1":
+            if p.get("version") in tls_filter:
+                return True
+    return False
+
 def extract_sections(test):
     ip = test.get("host", "")
     port = test.get("port", "")
@@ -89,9 +106,13 @@ def extract_sections(test):
     if protos:
         sections["Protocols"] = protos
 
+    tls_filter_tlsv = {f"TLSv{v}" for v in tls_filter or []}
+
     ciphers = []
     for c in test.findall("cipher"):
         ver = c.get("sslversion", "")
+        if tls_filter and ver not in tls_filter_tlsv:
+            continue
         bits = c.get("bits", "")
         cipher = c.get("cipher", "")
         curve = f" Curve {c.get('curve','')}".strip()
@@ -105,6 +126,8 @@ def extract_sections(test):
     groups = []
     for g in test.findall("group"):
         ver = g.get("sslversion", "")
+        if tls_filter and ver not in tls_filter_tlsv:
+            continue
         bits = g.get("bits", "")
         name = g.get("name", "")
         groups.append(f"{ver} {bits} bits {name}")
@@ -176,6 +199,8 @@ def has_weak_cipher(cipher_lines):
 # --ips mode
 if ips_mode:
     for test in root.findall("ssltest"):
+        if not has_tls_version(test):
+            continue
         ip, port, sections, not_after, issuer, subject = extract_sections(test)
         hostname = get_hostname(ip)
         if should_exclude(hostname):
@@ -197,6 +222,8 @@ if ips_mode:
 
 # Main output
 for test in root.findall("ssltest"):
+    if not has_tls_version(test):
+        continue
     ip, port, sections, not_after, issuer, subject = extract_sections(test)
     hostname = get_hostname(ip)
     if should_exclude(hostname):
@@ -222,11 +249,12 @@ for test in root.findall("ssltest"):
     if basic_mode:
         print(f"{display_ip}")
         for sec, lines in sections.items():
-            if selfsigned_mode and sec not in ["Protocols", "SSL Certificate"]:
+            if selfsigned_mode and sec not in ["Protocols", "SSL Certificate", "Supported Ciphers", "Key Exchange Groups"]:
                 continue
-            print(f"{sec}:")
-            for line in lines:
-                print(f"  {line}")
+            if lines:
+                print(f"{sec}:")
+                for line in lines:
+                    print(f"  {line}")
         print()
     else:
         console = Console()
@@ -236,7 +264,7 @@ for test in root.findall("ssltest"):
         table.add_column("Value", style="green")
 
         for sec, lines in sections.items():
-            if selfsigned_mode and sec not in ["Protocols", "SSL Certificate"]:
+            if selfsigned_mode and sec not in ["Protocols", "SSL Certificate", "Supported Ciphers", "Key Exchange Groups"]:
                 continue
             val = "\n".join(lines)
             if val.strip():
