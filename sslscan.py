@@ -6,17 +6,53 @@ from rich.console import Console
 from rich.table import Table
 from datetime import datetime, timezone
 
-if len(sys.argv) < 2:
-    print("Output: sslscan --xml=data_ssl_tls https://target/")
-    print("Output: sslscan --xml=data_ssl_tls --targets=hosts_port_443")
-    print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips]")
-    sys.exit(1)
+current_hostname = socket.gethostname()
 
-filename = sys.argv[1]
-basic_mode = "--basic" in sys.argv
-expired_mode = "--expired" in sys.argv
-ips_mode = "--ips" in sys.argv
-weak_mode = "--weak" in sys.argv
+# Argument parsing
+filename = None
+basic_mode = False
+expired_mode = False
+ips_mode = False
+weak_mode = False
+selfsigned_mode = False
+selfsigned_issuer = None
+selfsigned_subject = None
+
+i = 1
+while i < len(sys.argv):
+    arg = sys.argv[i]
+    if arg == "--basic":
+        basic_mode = True
+    elif arg == "--expired":
+        expired_mode = True
+    elif arg == "--ips":
+        ips_mode = True
+    elif arg == "--weak":
+        weak_mode = True
+    elif arg == "--selfsigned":
+        selfsigned_mode = True
+        i += 1
+        if i < len(sys.argv):
+            selfsigned_issuer = sys.argv[i]
+            i += 1
+            if i < len(sys.argv) and not sys.argv[i].startswith("--"):
+                selfsigned_subject = sys.argv[i]
+            else:
+                i -= 1
+                selfsigned_subject = selfsigned_issuer
+        else:
+            print("Error: --selfsigned requires at least one value")
+            sys.exit(1)
+    elif filename is None:
+        filename = arg
+    else:
+        print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]]")
+        sys.exit(1)
+    i += 1
+
+if filename is None:
+    print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]]")
+    sys.exit(1)
 
 try:
     tree = ET.parse(filename)
@@ -35,11 +71,15 @@ def get_hostname(ip):
     except:
         return ""
 
+def should_exclude(hostname):
+    if not hostname:
+        return False
+    return (hostname == current_hostname or hostname.split('.')[0] == current_hostname.split('.')[0])
+
 def extract_sections(test):
     ip = test.get("host", "")
+    port = test.get("port", "")
     sections = {}
-
-    # Protocols
     protos = []
     for p in test.findall("protocol"):
         typ = p.get("type", "").upper()
@@ -49,44 +89,19 @@ def extract_sections(test):
     if protos:
         sections["Protocols"] = protos
 
-    # Fallback
-    if (fb := test.find("fallback")) is not None:
-        sections["Fallback SCSV"] = ["supported" if fb.get("supported") == "1" else "not supported"]
-
-    # Renegotiation
-    if (reneg := test.find("renegotiation")) is not None:
-        supp = "supported" if reneg.get("supported") == "1" else "not supported"
-        sec = "secure" if reneg.get("secure") == "1" else "insecure"
-        sections["Renegotiation"] = [f"{supp}, {sec}"]
-
-    # Compression
-    if (comp := test.find("compression")) is not None:
-        sections["Compression"] = ["supported" if comp.get("supported") == "1" else "disabled"]
-
-    # Heartbleed
-    hb_lines = []
-    for hb in test.findall("heartbleed"):
-        ver = hb.get("sslversion")
-        vul = "vulnerable" if hb.get("vulnerable") == "1" else "not vulnerable"
-        hb_lines.append(f"{ver} {vul}")
-    if hb_lines:
-        sections["Heartbleed"] = hb_lines
-
-    # Ciphers
     ciphers = []
     for c in test.findall("cipher"):
         ver = c.get("sslversion", "")
         bits = c.get("bits", "")
         cipher = c.get("cipher", "")
         curve = f" Curve {c.get('curve','')}".strip()
-        ecdhe = f" DHE {c.get('ecdhebits','')}".strip() if c.get("ecdhebits") else ""
+        ecdhe = f" ECDHE {c.get('ecdhebits','')}".strip() if c.get("ecdhebits") else ""
         dhe = f" DHE {c.get('dhebits','')}".strip() if c.get("dhebits") else ""
         line = f"{ver} {bits} bits {cipher}{curve}{ecdhe}{dhe}".strip()
         ciphers.append(line)
     if ciphers:
         sections["Supported Ciphers"] = ciphers
 
-    # Groups
     groups = []
     for g in test.findall("group"):
         ver = g.get("sslversion", "")
@@ -96,38 +111,45 @@ def extract_sections(test):
     if groups:
         sections["Key Exchange Groups"] = groups
 
-    # Certificate
     cert_lines = []
     not_after_str = None
-    if (certs := test.find("certificates")) is not None:
-        cert = certs.find("certificate")
-        if cert is not None:
-            sig = cert.find("signature-algorithm")
-            if sig is not None and sig.text:
-                cert_lines.append(f"Signature Algorithm: {sig.text}")
-            pk = cert.find("pk")
-            if pk is not None:
-                cert_lines.append(f"RSA Key Strength: {pk.get('bits','')}")
-            subj = cert.find("subject")
-            if subj is not None and subj.text:
-                cert_lines.append(f"Subject: {subj.text}")
-            alt = cert.find("altnames")
-            if alt is not None and alt.text:
-                cert_lines.append(f"Altnames: {alt.text}")
-            iss = cert.find("issuer")
-            if iss is not None and iss.text:
-                cert_lines.append(f"Issuer: {iss.text}")
-            before = cert.find("not-valid-before")
-            if before is not None and before.text:
-                cert_lines.append(f"Not valid before: {before.text}")
-            after = cert.find("not-valid-after")
-            if after is not None and after.text:
-                not_after_str = after.text.strip()
-                cert_lines.append(f"Not valid after: {not_after_str}")
+    issuer = None
+    subject = None
+
+    cert_node = test.find(".//certificate[@type='short']")
+    if cert_node is None:
+        cert_node = test.find("certificate")
+
+    if cert_node is not None:
+        sig = cert_node.find("signature-algorithm")
+        if sig is not None and sig.text:
+            cert_lines.append(f"Signature Algorithm: {sig.text}")
+        pk = cert_node.find("pk")
+        if pk is not None:
+            cert_lines.append(f"RSA Key Strength: {pk.get('bits','')}")
+        subj = cert_node.find("subject")
+        if subj is not None and subj.text:
+            subject = subj.text.strip()
+            cert_lines.append(f"Subject: {subject}")
+        alt = cert_node.find("altnames")
+        if alt is not None and alt.text:
+            cert_lines.append(f"Altnames: {alt.text}")
+        iss = cert_node.find("issuer")
+        if iss is not None and iss.text:
+            issuer = iss.text.strip()
+            cert_lines.append(f"Issuer: {issuer}")
+        before = cert_node.find("not-valid-before")
+        if before is not None and before.text:
+            cert_lines.append(f"Not valid before: {before.text}")
+        after = cert_node.find("not-valid-after")
+        if after is not None and after.text:
+            not_after_str = after.text.strip()
+            cert_lines.append(f"Not valid after: {not_after_str}")
+
     if cert_lines:
         sections["SSL Certificate"] = cert_lines
 
-    return ip, sections, not_after_str
+    return ip, port, sections, not_after_str, issuer, subject
 
 def is_expired(date_str):
     if not date_str:
@@ -154,84 +176,70 @@ def has_weak_cipher(cipher_lines):
 # --ips mode
 if ips_mode:
     for test in root.findall("ssltest"):
-        ip = test.get("host", "")
-        xml_port = test.get("port", "")
-        _, sections, not_after = extract_sections(test)
-
-        # Apply filters
+        ip, port, sections, not_after, issuer, subject = extract_sections(test)
+        hostname = get_hostname(ip)
+        if should_exclude(hostname):
+            continue
         if expired_mode and not is_expired(not_after):
             continue
-        if weak_mode:
-            weak_ciphers = has_weak_cipher(sections.get("Supported Ciphers", []))
-            if not weak_ciphers:
+        if weak_mode and not has_weak_cipher(sections.get("Supported Ciphers", [])):
+            continue
+        if selfsigned_mode:
+            check_i = selfsigned_issuer is None or (issuer and selfsigned_issuer in issuer)
+            check_s = selfsigned_subject is None or (subject and selfsigned_subject in subject)
+            if not (check_i and check_s):
                 continue
-
-        hostname = get_hostname(ip)
-        display = f"{ip}:{xml_port}" if xml_port else ip
+        display = f"{ip}:{port}" if port else ip
         if hostname:
             display += f" ({hostname})"
         print(display)
     sys.exit(0)
 
-# Normal modes
-if basic_mode:
-    for test in root.findall("ssltest"):
-        ip, sections, not_after = extract_sections(test)
-        hostname = get_hostname(ip)
-        display_ip = f"{ip} ({hostname})" if hostname else ip
+# Main output
+for test in root.findall("ssltest"):
+    ip, port, sections, not_after, issuer, subject = extract_sections(test)
+    hostname = get_hostname(ip)
+    if should_exclude(hostname):
+        continue
 
-        # Apply filters
-        if expired_mode and not is_expired(not_after):
+    display_ip = f"{ip}:{port}" if port else ip
+    if hostname:
+        display_ip += f" ({hostname})"
+
+    if expired_mode and not is_expired(not_after):
+        continue
+    if weak_mode:
+        weak_ciphers = has_weak_cipher(sections.get("Supported Ciphers", []))
+        if not weak_ciphers:
             continue
-        if weak_mode:
-            weak_ciphers = has_weak_cipher(sections.get("Supported Ciphers", []))
-            if not weak_ciphers:
-                continue
-            # Replace full ciphers with only weak ones
-            sections["Supported Ciphers"] = weak_ciphers
-
-        if expired_mode:
-            print(f"{display_ip}")
-            print("SSL Certificate:")
-            for line in sections.get("SSL Certificate", []):
-                print(line)
-            print()
-        else:
-            print(f"{display_ip}")
-            for sec, lines in sections.items():
-                print(f"{sec}:")
-                for line in lines:
-                    print(line)
-            print()
-else:
-    console = Console()
-    table = Table(title="SSL Scan Results", show_lines=True)
-    table.add_column("IP", style="cyan", width=30)
-    table.add_column("Section", style="magenta")
-    table.add_column("Value", style="green")
-
-    for test in root.findall("ssltest"):
-        ip, sections, not_after = extract_sections(test)
-        hostname = get_hostname(ip)
-        display_ip = f"{ip} ({hostname})" if hostname else ip
-
-        # Apply filters
-        if expired_mode and not is_expired(not_after):
+        sections["Supported Ciphers"] = weak_ciphers
+    if selfsigned_mode:
+        check_i = selfsigned_issuer is None or (issuer and selfsigned_issuer in issuer)
+        check_s = selfsigned_subject is None or (subject and selfsigned_subject in subject)
+        if not (check_i and check_s):
             continue
-        if weak_mode:
-            weak_ciphers = has_weak_cipher(sections.get("Supported Ciphers", []))
-            if not weak_ciphers:
-                continue
-            # Show only weak ciphers
-            sections["Supported Ciphers"] = weak_ciphers
 
-        if expired_mode:
-            cert_val = "\n".join(sections.get("SSL Certificate", []))
-            if cert_val:
-                table.add_row(display_ip, "SSL Certificate", cert_val)
-        else:
-            for sec, lines in sections.items():
-                val = "\n".join(lines)
+    if basic_mode:
+        print(f"{display_ip}")
+        for sec, lines in sections.items():
+            if selfsigned_mode and sec not in ["Protocols", "SSL Certificate"]:
+                continue
+            print(f"{sec}:")
+            for line in lines:
+                print(f"  {line}")
+        print()
+    else:
+        console = Console()
+        table = Table(title="SSL Scan Results", show_lines=True)
+        table.add_column("IP:Port", style="cyan", width=40)
+        table.add_column("Section", style="magenta")
+        table.add_column("Value", style="green")
+
+        for sec, lines in sections.items():
+            if selfsigned_mode and sec not in ["Protocols", "SSL Certificate"]:
+                continue
+            val = "\n".join(lines)
+            if val.strip():
                 table.add_row(display_ip, sec, val)
-
-    console.print(table)
+        console.print(table)
+        print()
