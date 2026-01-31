@@ -15,51 +15,84 @@ expired_mode = False
 ips_mode = False
 weak_mode = False
 selfsigned_mode = False
-selfsigned_issuer = None
-selfsigned_subject = None
+selfsigned_pat1_lower = None
+selfsigned_pat2_lower = None
 tls_filter = None
 
 i = 1
 while i < len(sys.argv):
     arg = sys.argv[i]
-    if arg == "--basic":
+
+    if arg in ("--basic", "-b"):
         basic_mode = True
-    elif arg == "--expired":
+        i += 1
+        continue
+
+    if arg in ("--expired", "-e"):
         expired_mode = True
-    elif arg == "--ips":
+        i += 1
+        continue
+
+    if arg in ("--ips", "-i"):
         ips_mode = True
-    elif arg == "--weak":
+        i += 1
+        continue
+
+    if arg in ("--weak", "-w"):
         weak_mode = True
-    elif arg == "--selfsigned":
+        i += 1
+        continue
+
+    if arg == "--selfsigned":
         selfsigned_mode = True
         i += 1
-        if i < len(sys.argv):
-            selfsigned_issuer = sys.argv[i]
-            i += 1
-            if i < len(sys.argv) and not sys.argv[i].startswith("--"):
-                selfsigned_subject = sys.argv[i]
-            else:
-                i -= 1
-                selfsigned_subject = selfsigned_issuer
-        else:
+        if i >= len(sys.argv):
             print("Error: --selfsigned requires at least one value", file=sys.stderr)
             sys.exit(1)
-    elif arg == "--tls":
+
+        pattern1 = sys.argv[i].strip()
+        selfsigned_pat1_lower = pattern1.lower()
         i += 1
-        if i < len(sys.argv):
-            tls_filter = set(v.strip() for v in sys.argv[i].replace(" ", "").split(",") if v.strip())
+
+        if i < len(sys.argv) and not sys.argv[i].startswith("-"):
+            pattern2 = sys.argv[i].strip()
+            selfsigned_pat2_lower = pattern2.lower()
+            i += 1
         else:
-            print("Error: --tls requires versions", file=sys.stderr)
+            selfsigned_pat2_lower = None
+        continue
+
+    if arg == "--tls":
+        i += 1
+        if i >= len(sys.argv):
+            print("Error: --tls requires versions (comma-separated)", file=sys.stderr)
             sys.exit(1)
-    elif filename is None:
+
+        values = sys.argv[i].replace(" ", "").split(",")
+        tls_filter = set(v.strip() for v in values if v.strip())
+        i += 1
+        continue
+
+    if filename is None:
         filename = arg
-    else:
-        print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]] [--tls 1.0,1.1,1.2,1.3]", file=sys.stderr)
-        sys.exit(1)
-    i += 1
+        i += 1
+        continue
+
+    print(f"Error: unexpected argument '{arg}'", file=sys.stderr)
+    print("Usage: sslscan.py <xml_file> [options]", file=sys.stderr)
+    print("Options:", file=sys.stderr)
+    print("  -b, --basic                     Basic text output", file=sys.stderr)
+    print("  -e, --expired                   Show only expired certificates", file=sys.stderr)
+    print("  -i, --ips                       List only matching IP:port lines", file=sys.stderr)
+    print("  -w, --weak                      Show only hosts with weak ciphers", file=sys.stderr)
+    print("  --selfsigned PATTERN [PATTERN2] Filter by issuer/subject substring (case-insensitive)", file=sys.stderr)
+    print("  --tls 1.0,1.1,1.2,1.3           Only show hosts supporting listed TLS versions", file=sys.stderr)
+    sys.exit(1)
 
 if filename is None:
-    print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]] [--tls 1.0,1.1,1.2,1.3]", file=sys.stderr)
+    print("Error: missing XML filename", file=sys.stderr)
+    print("Usage: sslscan.py <xml_file> [options]", file=sys.stderr)
+    print("Run with --help for options", file=sys.stderr)
     sys.exit(1)
 
 tree = None
@@ -81,8 +114,8 @@ except ET.ParseError as e:
                 content += '\n</document>\n'
 
             tree = ET.parse(StringIO(content))
-        except:
-            print(f"Error: XML is invalid and recovery failed in '{filename}'", file=sys.stderr)
+        except Exception as recovery_err:
+            print(f"Error: XML is invalid and recovery failed: {recovery_err}", file=sys.stderr)
             sys.exit(1)
     else:
         print(f"Error: invalid XML in '{filename}': {e}", file=sys.stderr)
@@ -213,6 +246,25 @@ def has_weak_cipher(cipher_lines):
                 continue
     return weak
 
+def matches_selfsigned(issuer, subject):
+    if not selfsigned_mode:
+        return True
+    if not issuer and not subject:
+        return False
+
+    issuer_lower  = issuer.lower()  if issuer  else ""
+    subject_lower = subject.lower() if subject else ""
+
+    if selfsigned_pat2_lower is None:
+        # single pattern → match issuer OR subject
+        return selfsigned_pat1_lower in issuer_lower or selfsigned_pat1_lower in subject_lower
+    else:
+        # two patterns → issuer AND subject
+        return selfsigned_pat1_lower in issuer_lower and selfsigned_pat2_lower in subject_lower
+
+# ────────────────────────────────────────────────
+# --ips mode (list only)
+# ────────────────────────────────────────────────
 if ips_mode:
     for test in root.findall("ssltest"):
         if not has_tls_version(test):
@@ -225,11 +277,9 @@ if ips_mode:
             continue
         if weak_mode and not has_weak_cipher(sections.get("Supported Ciphers", [])):
             continue
-        if selfsigned_mode:
-            check_i = selfsigned_issuer is None or (issuer and selfsigned_issuer in issuer)
-            check_s = selfsigned_subject is None or (subject and selfsigned_subject in subject)
-            if not (check_i and check_s):
-                continue
+        if not matches_selfsigned(issuer, subject):
+            continue
+
         display = f"{ip}:{port}" if port else ip
         if hostname:
             display += f" ({hostname})"
@@ -246,10 +296,6 @@ for test in root.findall("ssltest"):
     if should_exclude(hostname):
         continue
 
-    display_ip = f"{ip}:{port}" if port else ip
-    if hostname:
-        display_ip += f" ({hostname})"
-
     if expired_mode and not is_expired(not_after):
         continue
 
@@ -260,17 +306,16 @@ for test in root.findall("ssltest"):
             continue
         sections["Supported Ciphers"] = weak_ciphers
 
-    if selfsigned_mode:
-        check_i = selfsigned_issuer is None or (issuer and selfsigned_issuer in issuer)
-        check_s = selfsigned_subject is None or (subject and selfsigned_subject in subject)
-        if not (check_i and check_s):
-            continue
+    if not matches_selfsigned(issuer, subject):
+        continue
+
+    display_ip = f"{ip}:{port}" if port else ip
+    if hostname:
+        display_ip += f" ({hostname})"
 
     if basic_mode:
         print(f"{display_ip}")
         for sec, lines in sections.items():
-            if selfsigned_mode and sec not in ["Protocols", "SSL Certificate", "Supported Ciphers", "Key Exchange Groups"]:
-                continue
             if lines:
                 print(f"{sec}:")
                 for line in lines:
@@ -283,8 +328,6 @@ for test in root.findall("ssltest"):
         table.add_column("Value", style="green")
 
         for sec, lines in sections.items():
-            if selfsigned_mode and sec not in ["Protocols", "SSL Certificate", "Supported Ciphers", "Key Exchange Groups"]:
-                continue
             val = "\n".join(lines)
             if val.strip():
                 table.add_row(display_ip, sec, val)
