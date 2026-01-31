@@ -42,11 +42,13 @@ def parse_gnmap_files(target_ips=None, target_ports=None):
                     hosts_data[ip].update(host_ports)
     return hosts_data
 
+
 def get_hostname(ip):
     try:
         return socket.gethostbyaddr(ip)[0]
     except:
         return ""
+
 
 def should_exclude(hostname, exhosts):
     if not hostname:
@@ -55,38 +57,44 @@ def should_exclude(hostname, exhosts):
         return True
     return any(ex in hostname for ex in exhosts)
 
-def print_basic(hosts_data, exhosts, target_ports):
+
+def print_basic(hosts_data, exhosts, target_ports, no_hostname=False):
     for host, entries in sorted(hosts_data.items(), key=lambda x: ipaddress.ip_address(x[0])):
-        hostname = get_hostname(host)
+        hostname = "" if no_hostname else get_hostname(host)
         if should_exclude(hostname, exhosts):
             continue
         header = f"{host} {hostname}".strip()
         print(header)
         for portid, service in sorted(entries, key=lambda x: int(x[0])):
-            print(f"{portid}/{service}")
+            print(f"  {portid}/{service}")
         print()
 
-def print_table(hosts_data, exhosts):
+
+def print_table(hosts_data, exhosts, no_hostname=False):
     console = Console()
     table = Table(header_style="bold magenta", show_lines=True)
     table.add_column("HOST", style="cyan", no_wrap=True)
     table.add_column("PORTS", style="green")
     table.add_column("SERVICES", style="yellow")
+
     for host, entries in sorted(hosts_data.items(), key=lambda x: ipaddress.ip_address(x[0])):
-        hostname = get_hostname(host)
+        hostname = "" if no_hostname else get_hostname(host)
         if should_exclude(hostname, exhosts):
             continue
         entries_sorted = sorted(entries, key=lambda x: int(x[0]))
         ports_str = "\n".join(p for p, _ in entries_sorted)
         services_str = "\n".join(s for _, s in entries_sorted)
         table.add_row(host, ports_str, services_str)
+
     console.print(table)
 
-def print_ips_only(hosts_data, exhosts, target_ports):
+
+def print_ips_only(hosts_data, exhosts, target_ports, no_hostname=False):
     for host in sorted(hosts_data.keys(), key=ipaddress.ip_address):
-        hostname = get_hostname(host)
+        hostname = "" if no_hostname else get_hostname(host)
         if should_exclude(hostname, exhosts):
             continue
+
         if target_ports:
             open_target_ports = sorted([p for p, _ in hosts_data[host] if p in target_ports], key=int)
             if open_target_ports:
@@ -96,13 +104,15 @@ def print_ips_only(hosts_data, exhosts, target_ports):
                 out = host
         else:
             out = host
+
         hostname_part = f" ({hostname})" if hostname else ""
         print(out + hostname_part)
 
-def print_allports(hosts_data, exhosts):
+
+def print_allports(hosts_data, exhosts, no_hostname=False):
     lines = []
     for host, entries in sorted(hosts_data.items(), key=lambda x: ipaddress.ip_address(x[0])):
-        hostname = get_hostname(host)
+        hostname = "" if no_hostname else get_hostname(host)
         if should_exclude(hostname, exhosts):
             continue
         for portid, _ in sorted(entries, key=lambda x: int(x[0])):
@@ -110,10 +120,12 @@ def print_allports(hosts_data, exhosts):
     for line in lines:
         print(line)
 
+
 if __name__ == "__main__":
     basic = "--basic" in sys.argv
     ips_only = "--ips" in sys.argv
     allports = "--allports" in sys.argv
+    no_hostname = "--no-hostname" in sys.argv
 
     target_arg = None
     target_ports = None
@@ -122,13 +134,13 @@ if __name__ == "__main__":
     i = 1
     while i < len(sys.argv):
         arg = sys.argv[i]
-        if arg in ("--basic", "--ips", "--allports"):
+        if arg in ("--basic", "--ips", "--allports", "--no-hostname"):
             pass
-        elif arg == "-p" and i+1 < len(sys.argv):
-            target_ports = set(sys.argv[i+1].split(","))
+        elif arg == "-p" and i + 1 < len(sys.argv):
+            target_ports = set(sys.argv[i + 1].split(","))
             i += 1
-        elif arg == "--exhost" and i+1 < len(sys.argv):
-            exhost_arg = sys.argv[i+1]
+        elif arg == "--exhost" and i + 1 < len(sys.argv):
+            exhost_arg = sys.argv[i + 1]
             i += 1
         elif not arg.startswith("-"):
             target_arg = arg
@@ -150,10 +162,10 @@ if __name__ == "__main__":
 
     if hosts:
         if allports:
-            print_allports(hosts, exhosts)
+            print_allports(hosts, exhosts, no_hostname)
         elif ips_only:
-            print_ips_only(hosts, exhosts, target_ports)
+            print_ips_only(hosts, exhosts, target_ports, no_hostname)
         elif basic:
-            print_basic(hosts, exhosts, target_ports)
+            print_basic(hosts, exhosts, target_ports, no_hostname)
         else:
-            print_table(hosts, exhosts)
+            print_table(hosts, exhosts, no_hostname)
