@@ -5,10 +5,10 @@ import xml.etree.ElementTree as ET
 from rich.console import Console
 from rich.table import Table
 from datetime import datetime, timezone
+from io import StringIO
 
 current_hostname = socket.gethostname()
 
-# Argument parsing
 filename = None
 basic_mode = False
 expired_mode = False
@@ -42,33 +42,53 @@ while i < len(sys.argv):
                 i -= 1
                 selfsigned_subject = selfsigned_issuer
         else:
-            print("Error: --selfsigned requires at least one value")
+            print("Error: --selfsigned requires at least one value", file=sys.stderr)
             sys.exit(1)
     elif arg == "--tls":
         i += 1
         if i < len(sys.argv):
             tls_filter = set(v.strip() for v in sys.argv[i].replace(" ", "").split(",") if v.strip())
         else:
-            print("Error: --tls requires versions")
+            print("Error: --tls requires versions", file=sys.stderr)
             sys.exit(1)
     elif filename is None:
         filename = arg
     else:
-        print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]] [--tls 1.0,1.1]")
+        print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]] [--tls 1.0,1.1,1.2,1.3]", file=sys.stderr)
         sys.exit(1)
     i += 1
 
 if filename is None:
-    print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]] [--tls 1.0,1.1]")
+    print("Usage: sslscan.py <xml_file> [--expired] [--weak] [--basic] [--ips] [--selfsigned ISSUER [SUBJECT]] [--tls 1.0,1.1,1.2,1.3]", file=sys.stderr)
     sys.exit(1)
 
+tree = None
 try:
     tree = ET.parse(filename)
 except FileNotFoundError:
-    print(f"Error: file '{filename}' not found")
+    print(f"Error: file '{filename}' not found", file=sys.stderr)
     sys.exit(1)
-except ET.ParseError:
-    print(f"Error: invalid XML in '{filename}'")
+except ET.ParseError as e:
+    err_msg = str(e).lower()
+    if any(x in err_msg for x in ["no element found", "mismatched tag", "premature end", "unexpected end"]):
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                content = f.read().rstrip()
+
+            if not content.strip().endswith('</document>'):
+                if content.count('<ssltest') > content.count('</ssltest>'):
+                    content += '\n  </ssltest>'
+                content += '\n</document>\n'
+
+            tree = ET.parse(StringIO(content))
+        except:
+            print(f"Error: XML is invalid and recovery failed in '{filename}'", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print(f"Error: invalid XML in '{filename}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+if tree is None:
     sys.exit(1)
 
 root = tree.getroot()
@@ -146,7 +166,7 @@ def extract_sections(test):
     if cert_node is not None:
         sig = cert_node.find("signature-algorithm")
         if sig is not None and sig.text:
-            cert_lines.append(f"Signature Algorithm: {sig.text}")
+            cert_lines.append(f"Signature Algorithm: {sig.text.strip()}")
         pk = cert_node.find("pk")
         if pk is not None:
             cert_lines.append(f"RSA Key Strength: {pk.get('bits','')}")
@@ -154,16 +174,13 @@ def extract_sections(test):
         if subj is not None and subj.text:
             subject = subj.text.strip()
             cert_lines.append(f"Subject: {subject}")
-        alt = cert_node.find("altnames")
-        if alt is not None and alt.text:
-            cert_lines.append(f"Altnames: {alt.text}")
         iss = cert_node.find("issuer")
         if iss is not None and iss.text:
             issuer = iss.text.strip()
             cert_lines.append(f"Issuer: {issuer}")
         before = cert_node.find("not-valid-before")
         if before is not None and before.text:
-            cert_lines.append(f"Not valid before: {before.text}")
+            cert_lines.append(f"Not valid before: {before.text.strip()}")
         after = cert_node.find("not-valid-after")
         if after is not None and after.text:
             not_after_str = after.text.strip()
@@ -196,7 +213,6 @@ def has_weak_cipher(cipher_lines):
                 continue
     return weak
 
-# --ips mode
 if ips_mode:
     for test in root.findall("ssltest"):
         if not has_tls_version(test):
@@ -220,10 +236,11 @@ if ips_mode:
         print(display)
     sys.exit(0)
 
-# Main output
+console = Console()
 for test in root.findall("ssltest"):
     if not has_tls_version(test):
         continue
+
     ip, port, sections, not_after, issuer, subject = extract_sections(test)
     hostname = get_hostname(ip)
     if should_exclude(hostname):
@@ -235,11 +252,14 @@ for test in root.findall("ssltest"):
 
     if expired_mode and not is_expired(not_after):
         continue
+
+    weak_ciphers = None
     if weak_mode:
         weak_ciphers = has_weak_cipher(sections.get("Supported Ciphers", []))
         if not weak_ciphers:
             continue
         sections["Supported Ciphers"] = weak_ciphers
+
     if selfsigned_mode:
         check_i = selfsigned_issuer is None or (issuer and selfsigned_issuer in issuer)
         check_s = selfsigned_subject is None or (subject and selfsigned_subject in subject)
@@ -257,7 +277,6 @@ for test in root.findall("ssltest"):
                     print(f"  {line}")
         print()
     else:
-        console = Console()
         table = Table(title="SSL Scan Results", show_lines=True)
         table.add_column("IP:Port", style="cyan", width=40)
         table.add_column("Section", style="magenta")
@@ -269,5 +288,6 @@ for test in root.findall("ssltest"):
             val = "\n".join(lines)
             if val.strip():
                 table.add_row(display_ip, sec, val)
+
         console.print(table)
         print()
