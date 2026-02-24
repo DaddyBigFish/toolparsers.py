@@ -27,7 +27,7 @@ def display_banner():
 /\__/ /\__/ / | | | | \__/\| | | || |___| \__/\| |\  \
 \____/\____/\_| |_/  \____/\_| |_/\____/ \____/\_| \_/
     {ENDC}
-    {RED}Vulnerability Checker{ENDC}
+    {RED}CVE-2024-6387 Vulnerability Scan{ENDC}
 """
     print(banner)
 
