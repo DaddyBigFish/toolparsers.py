@@ -171,7 +171,7 @@ def main():
     print(f"\n{BLUE}[*]{ENDC} Servers not vulnerable: {len(not_vulnerable)}")
     for ip, msg in not_vulnerable:
         print(f"{GREEN}[+]{ENDC} Server at {ip}: {msg}")
-    print(f"\n{RED}[+]{ENDC} Servers likely vulnerable: {len(vulnerable)}")
+    print(f"\n{RED}[+]{ENDC} Servers vulnerable to CVE-2024-6387: {len(vulnerable)}")
     for ip, msg in vulnerable:
         print(f"{RED}[+]{ENDC} Server at {ip}: {msg}")
     print(f"\n{ORANGE}[+]{ENDC} Servers with unknown SSH Version: {len(unknown)}")
