@@ -224,12 +224,7 @@ def print_ips_only(hosts_data, exhosts, target_ports, dns_server=None, no_hostna
 
         if target_ports:
             open_target_ports = sorted([p for p, _ in hosts_data[host] if p in target_ports], key=int)
-        else:
-            open_target_ports = sorted([p for p, _ in hosts_data[host]], key=int)
-
-        if open_target_ports:
-            port_str = ",".join(open_target_ports)
-            out = f"{host}:{port_str}"
+            out = f"{host}:{','.join(open_target_ports)}" if open_target_ports else host
         else:
             out = host
 
@@ -293,6 +288,12 @@ if __name__ == "__main__":
             target_ports = set(m.group(1).split("_"))
 
     hosts = parse_gnmap_files(target_ips, target_ports)
+
+    # Ensure all IPs from the input file are included even if not in any gnmap
+    if target_ips:
+        for ip in target_ips:
+            if ip not in hosts:
+                hosts[ip] = set()
 
     extra_ex = [ex.strip() for ex in exhost_arg.split(",")] if exhost_arg else []
     exhosts = extra_ex
