@@ -1,0 +1,17 @@
+#!/bin/bash
+smbclient "$1" -U "$2" -c 'recurse;ls' 2>/dev/null | python3 -c "
+import sys
+base,path,seen='$1','',set()
+for l in sys.stdin:
+    l=l.rstrip()
+    if l.startswith('\\\\'):
+        path=l.strip()
+    elif l.strip():
+        p=l.strip().split()
+        if p[0] in ('.','..') or 'blocks' in l or len(p)<2 or p[1]=='D':
+            continue
+        full=base+path.replace('\\\\','/')+'/'+p[0]
+        if full not in seen:
+            seen.add(full)
+            print(full)
+"
