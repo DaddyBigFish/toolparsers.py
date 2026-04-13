@@ -1,4 +1,5 @@
 #!/bin/bash
+# Example: '//172.27.97.53/SHARENAME' 'domain/username%password'
 smbclient "$1" -U "$2" -c 'recurse;ls' 2>/dev/null | python3 -c "
 import sys
 base,path,seen='$1','',set()
