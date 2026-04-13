@@ -1,8 +1,37 @@
 #!/bin/bash
-# Example: '//172.27.97.53/SHARENAME' 'domain/username%password'
-smbclient "$1" -U "$2" -c 'recurse;ls' 2>/dev/null | python3 -c "
+# smblist - Recursively list SMB share contents
+# Usage: smblist 'user%pass' [shares.txt]
+#
+# Shares file format (one per line):
+#   //192.168.1.1/sharename
+#   //192.168.1.2/another share
+#
+# Examples:
+#   smblist 'domain/user%pass' shares.txt
+#   cat shares.txt | smblist 'domain/user%pass'
+#   smblist 'domain/user%pass' <<< '//192.168.1.1/share'
+
+if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "Usage: smblist 'user%pass' [shares.txt]"
+    echo ""
+    echo "Shares file format (one per line):"
+    echo "  //IP/sharename"
+    echo "  //IP/share with spaces"
+    echo ""
+    echo "Examples:"
+    echo "  smblist 'domain/user%pass' shares.txt"
+    echo "  cat shares.txt | smblist 'domain/user%pass'"
+    exit 1
+fi
+
+creds="$1"
+input="${2:--}"
+
+while read share; do
+    [ -z "$share" ] && continue
+    smbclient "$share" -U "$creds" -c 'recurse;ls' 2>/dev/null | python3 -c "
 import sys
-base,path,seen='$1','',set()
+base,path,seen='$share','',set()
 for l in sys.stdin:
     l=l.rstrip()
     if l.startswith('\\\\'):
