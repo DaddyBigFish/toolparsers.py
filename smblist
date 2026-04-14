@@ -1,35 +1,62 @@
 #!/bin/bash
 # smblist - Recursively list SMB share contents
-# Usage: smblist 'user%pass' [shares.txt]
 #
-# Shares file format (one per line):
-#   //192.168.1.1/sharename
-#   //192.168.1.2/another share
-#
-# Examples:
-#   smblist 'domain/user%pass' shares.txt
-#   cat shares.txt | smblist 'domain/user%pass'
-#   smblist 'domain/user%pass' <<< '//192.168.1.1/share'
+# Usage:
+#   smblist 'user%pass' [shares.txt]            - use existing shares file
+#   smblist 'user%pass' -nxc <nxc_output>       - enumerate from nxc output
+#   smblist -nxc <nxc_output>                   - just parse nxc into share list
+#   smblist 'user%pass' -get '//IP/share/file'  - download a specific file
+#   smblist 'user%pass' -gui [paths.txt]        - launch web gui
+#   smblist 'user%pass' [shares.txt] -o out.txt - output to file and terminal
+#   cat shares.txt | smblist 'user%pass'        - stdin mode
 
 if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     echo "Usage: smblist 'user%pass' [shares.txt]"
+    echo "       smblist 'user%pass' -nxc <nxc_output_file>"
+    echo "       smblist -nxc <nxc_output_file>"
+    echo "       smblist 'user%pass' -get '//IP/share/path/to/file'"
+    echo "       smblist 'user%pass' -gui [paths.txt]"
+    echo "       smblist 'user%pass' [shares.txt] -o output.txt"
     echo ""
     echo "Shares file format (one per line):"
     echo "  //IP/sharename"
     echo "  //IP/share with spaces"
-    echo ""
-    echo "Examples:"
-    echo "  smblist 'domain/user%pass' shares.txt"
-    echo "  cat shares.txt | smblist 'domain/user%pass'"
     exit 1
 fi
 
-creds="$1"
-input="${2:--}"
+parse_nxc() {
+    grep 'READ' "$1" | awk '{
+        for(i=1;i<=NF;i++){
+            if($i ~ /^READ/){
+                share=""
+                for(j=5;j<i;j++) share=share($j)(j<i-1?" ":"")
+                print "//"$2"/"share
+                break
+            }
+        }
+    }' | grep -v 'IPC\$'
+}
 
-while read share; do
-    [ -z "$share" ] && continue
-    smbclient "$share" -U "$creds" -c 'recurse;ls' 2>/dev/null | python3 -c "
+download_file() {
+    fullpath="$1"
+    share=$(echo "$fullpath" | grep -oP '//[^/]+/[^/]+')
+    filepath=$(echo "$fullpath" | sed "s|$share||")
+    dir=$(dirname "$filepath")
+    filename=$(basename "$filepath")
+    echo "[*] Downloading: $filename"
+    echo "[*] From: $share$dir"
+    smbclient "$share" -U "$creds" -c "cd \"$dir\"; get \"$filename\"" 2>/dev/null
+    if [ -f "$filename" ]; then
+        echo "[+] Saved: $(pwd)/$filename"
+    else
+        echo "[-] Failed: $filename"
+    fi
+}
+
+run_smblist() {
+    while read share; do
+        [ -z "$share" ] && continue
+        smbclient "$share" -U "$creds" -c 'recurse;ls' 2>/dev/null | python3 -c "
 import sys
 base,path,seen='$share','',set()
 for l in sys.stdin:
@@ -44,4 +71,358 @@ for l in sys.stdin:
         if full not in seen:
             seen.add(full)
             print(full)
-"
+" | if [ -n "$outfile" ]; then tee -a "$outfile"; else cat; fi
+    done
+}
+
+creds="$1"
+
+if [ "$2" = "-gui" ]; then
+    pathsfile="${3:-}"
+    python3 - "$creds" "$pathsfile" << 'PYEOF'
+import sys, os, threading, webbrowser, subprocess
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import urllib.parse, json
+
+creds = sys.argv[1] if len(sys.argv) > 1 else ''
+pathsfile = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else ''
+paths = []
+if pathsfile and os.path.exists(pathsfile):
+    with open(pathsfile) as f:
+        paths = [l.strip() for l in f if l.strip()]
+
+HTML = """<!DOCTYPE html>
+<html><head><meta charset=UTF-8><title>smblist</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:monospace;background:#0d0d0d;color:#c8c8c8;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+#top{padding:8px 14px;border-bottom:1px solid #222;display:flex;gap:8px;align-items:center;background:#111;flex-shrink:0}
+#top input[type=text]{background:#1a1a1a;border:1px solid #333;color:#c8c8c8;padding:5px 8px;font-family:monospace;font-size:12px;border-radius:4px}
+#top button{background:#1a1a1a;border:1px solid #444;color:#8f8;padding:5px 10px;cursor:pointer;font-family:monospace;font-size:12px;border-radius:4px}
+#top button:hover{background:#222}
+#top label{font-size:12px;color:#8f8;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap}
+#manualpath{width:200px}
+#main{display:flex;flex:1;overflow:hidden;min-height:0}
+#left{width:40%;border-right:1px solid #222;display:flex;flex-direction:column;min-height:0}
+#leftbar{padding:6px 6px 4px;border-bottom:1px solid #1a1a1a;background:#0d0d0d;flex-shrink:0;display:flex;gap:4px;align-items:center}
+#leftbar input{flex:1;background:#1a1a1a;border:1px solid #333;color:#c8c8c8;padding:4px 7px;font-family:monospace;font-size:11px;border-radius:4px}
+#leftbar span{font-size:10px;color:#555;white-space:nowrap}
+#pathList{flex:1;overflow-y:auto;padding:4px}
+#right{width:60%;background:#0a0a0a;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+#rightbar{padding:6px 8px 4px;border-bottom:1px solid #1a1a1a;background:#0d0d0d;flex-shrink:0;display:flex;gap:4px;align-items:center}
+#rightbar input{flex:1;background:#1a1a1a;border:1px solid #333;color:#c8c8c8;padding:4px 7px;font-family:monospace;font-size:11px;border-radius:4px}
+#rightbar span{font-size:10px;color:#555;white-space:nowrap}
+#header{font-size:11px;color:#8f8;padding:6px 12px;word-break:break-all;border-bottom:1px solid #1a1a1a;background:#0d0d0d;flex-shrink:0}
+#contentarea{flex:1;overflow-y:auto;padding:12px;min-height:0}
+#content{font-size:12px;white-space:pre-wrap;word-break:break-all;color:#aaa;line-height:1.6;margin:0}
+#bottom{padding:8px 12px;border-top:1px solid #1a1a1a;flex-shrink:0;display:none}
+#status{padding:3px 14px;font-size:11px;color:#555;background:#111;border-top:1px solid #1a1a1a;flex-shrink:0}
+.path{padding:3px 8px;cursor:pointer;border-radius:3px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#aaa}
+.path:hover{background:#1a1a1a;color:#fff}
+.path.active{background:#1a3a1a;color:#8f8}
+.hl{background:#3a3a00;color:#ff8}
+.ok{color:#8f8}.err{color:#f88}
+.dl-btn{background:#1a2a1a;border:1px solid #3a5a3a;color:#8f8;padding:5px 12px;cursor:pointer;font-family:monospace;font-size:12px;border-radius:4px}
+.dl-btn:hover{background:#223a22}
+</style></head>
+<body>
+<div id=top>
+  <span style="font-size:11px;color:#555">load paths file:</span>
+  <input type=file id=fileInput accept=.txt onchange=loadFile(this) title="select a .txt file containing SMB paths">
+  <span style="font-size:11px;color:#555">or path on disk:</span>
+  <input type=text id=manualpath placeholder="/home/user/paths.txt">
+  <button onclick=loadManual()>load</button>
+  <label><input type=checkbox id=useProxy checked> proxychains</label>
+  <button onclick=clearRight()>clear</button>
+</div>
+<div id=main>
+  <div id=left>
+    <div id=leftbar>
+      <span>filter paths:</span>
+      <input type=text id=filterpath placeholder="keyword,keyword... (comma = OR)" oninput=schedulePathFilter() title="filter the path list — comma separated terms use OR logic">
+    </div>
+    <div id=pathList><div style=padding:8px;color:#444>load a file to begin</div></div>
+  </div>
+  <div id=right>
+    <div id=rightbar>
+      <span>search in file:</span>
+      <input type=text id=filtercontent placeholder="keyword,keyword... (comma = OR)" oninput=scheduleContentHL() title="highlight terms in the file content — comma separated terms use OR logic">
+    </div>
+    <div id=header>select a path</div>
+    <div id=contentarea><pre id=content>click a path to view its contents</pre></div>
+    <div id=bottom><button class=dl-btn onclick=dl()>[+] download file</button></div>
+  </div>
+</div>
+<div id=status>0 paths</div>
+<script>
+let all=[],curPath=null,pathFilterTimer=null,contentHLTimer=null,lastContent='';
+
+fetch('/paths').then(r=>r.json()).then(d=>{all=d;render(all);});
+
+function loadFile(inp){
+  const f=inp.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=ev=>{all=ev.target.result.split('\\n').map(l=>l.trim()).filter(Boolean);render(all);};
+  r.readAsText(f);
+}
+
+function loadManual(){
+  const p=document.getElementById('manualpath').value.trim();
+  if(!p)return;
+  fetch('/loadfile?path='+encodeURIComponent(p))
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.ok){all=d.paths;render(all);}
+      else document.getElementById('status').innerHTML='<span class=err>[-] '+d.msg+'</span>';
+    });
+}
+
+// path filter - filters the list independently
+function schedulePathFilter(){
+  clearTimeout(pathFilterTimer);
+  pathFilterTimer=setTimeout(applyPathFilter,150);
+}
+
+function applyPathFilter(){
+  const val=document.getElementById('filterpath').value.trim();
+  if(!val){render(all);return;}
+  const terms=val.toLowerCase().split(',').map(t=>t.trim()).filter(Boolean);
+  const filtered=all.filter(p=>terms.some(t=>p.toLowerCase().includes(t)));
+  render(filtered);
+}
+
+// content search - highlights in open file independently, does not affect path list
+function scheduleContentHL(){
+  clearTimeout(contentHLTimer);
+  contentHLTimer=setTimeout(applyContentHL,150);
+}
+
+function applyContentHL(){
+  if(!lastContent)return;
+  document.getElementById('content').innerHTML=highlight(lastContent);
+  const hits=countHL(lastContent);
+  const rbar=document.getElementById('rightbar');
+  const old=rbar.querySelector('.hitcount');
+  if(old)old.remove();
+  if(hits>0){
+    const s=document.createElement('span');
+    s.className='hitcount';
+    s.style.cssText='font-size:10px;color:#ff8;white-space:nowrap;margin-left:4px';
+    s.textContent=hits+' match'+(hits===1?'':'es');
+    rbar.appendChild(s);
+  }
+}
+
+function render(paths){
+  document.getElementById('status').textContent=paths.length+' / '+all.length+' paths';
+  const list=document.getElementById('pathList');
+  const renderID = Date.now();
+  list.dataset.renderid=renderID;
+  list.innerHTML='';
+  let i=0;
+  function chunk(){
+    if(list.dataset.renderid!=renderID)return;
+    const frag=document.createDocumentFragment();
+    const end=Math.min(i+500,paths.length);
+    for(;i<end;i++){
+      const p=paths[i];
+      const d=document.createElement('div');
+      d.className='path';
+      d.title=p;
+      d.textContent=p;
+      d.onclick=()=>sel(d,p);
+      frag.appendChild(d);
+    }
+    list.appendChild(frag);
+    if(i<paths.length)requestAnimationFrame(chunk);
+  }
+  chunk();
+}
+
+function proxy(){return document.getElementById('useProxy').checked?1:0;}
+
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function escRe(s){return s.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&');}
+
+function highlight(text){
+  const val=document.getElementById('filtercontent').value.trim();
+  let result=escHtml(text);
+  if(!val)return result;
+  const terms=val.split(',').map(t=>t.trim()).filter(Boolean);
+  terms.forEach(t=>{
+    const re=new RegExp(escRe(escHtml(t)),'gi');
+    result=result.replace(re,m=>'<span class=hl>'+m+'</span>');
+  });
+  return result;
+}
+
+function countHL(text){
+  const val=document.getElementById('filtercontent').value.trim();
+  if(!val)return 0;
+  const terms=val.split(',').map(t=>t.trim()).filter(Boolean);
+  let total=0;
+  terms.forEach(t=>{
+    const re=new RegExp(escRe(escHtml(t)),'gi');
+    const matches=escHtml(text).match(re);
+    if(matches)total+=matches.length;
+  });
+  return total;
+}
+
+function sel(el,path){
+  document.querySelectorAll('.path').forEach(e=>e.classList.remove('active'));
+  el.classList.add('active');
+  curPath=path;
+  document.getElementById('header').textContent=path;
+  document.getElementById('content').textContent='loading...';
+  document.getElementById('bottom').style.display='none';
+  lastContent='';
+  fetch('/cat?path='+encodeURIComponent(path)+'&proxy='+proxy())
+    .then(r=>r.json())
+    .then(d=>{
+      const c=document.getElementById('content');
+      if(d.ok){
+        lastContent=d.content;
+        c.innerHTML=highlight(d.content);
+        const hits=countHL(d.content);
+        const rbar=document.getElementById('rightbar');
+        const old=rbar.querySelector('.hitcount');
+        if(old)old.remove();
+        if(hits>0){
+          const s=document.createElement('span');
+          s.className='hitcount';
+          s.style.cssText='font-size:10px;color:#ff8;white-space:nowrap;margin-left:4px';
+          s.textContent=hits+' match'+(hits===1?'':'es');
+          rbar.appendChild(s);
+        }
+      } else {
+        c.textContent=d.msg;
+      }
+      document.getElementById('bottom').style.display='block';
+    });
+}
+
+function dl(){
+  if(!curPath)return;
+  document.getElementById('status').textContent='[*] downloading: '+curPath;
+  fetch('/download?path='+encodeURIComponent(curPath)+'&proxy='+proxy())
+    .then(r=>r.json())
+    .then(d=>{
+      document.getElementById('status').innerHTML=
+        d.ok?'<span class=ok>[+] saved: '+d.msg+'</span>':'<span class=err>[-] failed: '+d.msg+'</span>';
+    });
+}
+
+function clearRight(){
+  curPath=null;
+  lastContent='';
+  document.getElementById('header').textContent='select a path';
+  document.getElementById('content').textContent='click a path to view its contents';
+  document.getElementById('bottom').style.display='none';
+}
+</script></body></html>"""
+
+def run_cmd(cmd, use_proxy):
+    if use_proxy:
+        cmd = ['proxychains'] + cmd
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        p = urllib.parse.urlparse(self.path)
+        qs = urllib.parse.parse_qs(p.query)
+        use_proxy = qs.get('proxy',['0'])[0] == '1'
+
+        if p.path == '/':
+            self.send_response(200)
+            self.send_header('Content-Type','text/html')
+            self.end_headers()
+            self.wfile.write(HTML.encode())
+
+        elif p.path == '/paths':
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(paths).encode())
+
+        elif p.path == '/loadfile':
+            path = qs.get('path',[''])[0]
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.end_headers()
+            try:
+                with open(path) as f:
+                    loaded = [l.strip() for l in f if l.strip()]
+                self.wfile.write(json.dumps({'ok':True,'paths':loaded}).encode())
+            except Exception as e:
+                self.wfile.write(json.dumps({'ok':False,'msg':str(e)}).encode())
+
+        elif p.path == '/cat':
+            path = qs.get('path',[''])[0]
+            share = '/'.join(path.split('/')[:4])
+            filepath = '/'+'/'.join(path.split('/')[4:])
+            result = run_cmd(
+                ['smbclient', share, '-U', creds, '-c', f'get "{filepath}" /tmp/smblist_preview'],
+                use_proxy
+            )
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.end_headers()
+            try:
+                with open('/tmp/smblist_preview','rb') as f:
+                    content = f.read().decode('utf-8', errors='replace')
+                os.remove('/tmp/smblist_preview')
+                self.wfile.write(json.dumps({'ok':True,'content':content}).encode())
+            except:
+                self.wfile.write(json.dumps({'ok':False,'msg':result.stderr.strip() or 'could not read file'}).encode())
+
+        elif p.path == '/download':
+            path = qs.get('path',[''])[0]
+            share = '/'.join(path.split('/')[:4])
+            filepath = '/'+'/'.join(path.split('/')[4:])
+            d = os.path.dirname(filepath)
+            f = os.path.basename(filepath)
+            result = run_cmd(
+                ['smbclient', share, '-U', creds, '-c', f'cd "{d}"; get "{f}"'],
+                use_proxy
+            )
+            self.send_response(200)
+            self.send_header('Content-Type','application/json')
+            self.end_headers()
+            if os.path.exists(f):
+                self.wfile.write(json.dumps({'ok':True,'msg':f}).encode())
+            else:
+                self.wfile.write(json.dumps({'ok':False,'msg':result.stderr.strip()}).encode())
+
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+port = 18888
+print(f'[*] smblist gui at http://127.0.0.1:{port}')
+print('[*] ctrl+c to stop')
+threading.Timer(1, lambda: webbrowser.open(f'http://127.0.0.1:{port}')).start()
+HTTPServer(('127.0.0.1', port), Handler).serve_forever()
+PYEOF
+    exit 0
+fi
+
+outfile=""
+for i in "$@"; do
+    if [ "$prev" = "-o" ]; then outfile="$i"; fi
+    prev="$i"
+done
+[ -n "$outfile" ] && > "$outfile"
+
+if [ "$2" = "-get" ]; then
+    download_file "$3"
+elif [ "$2" = "-nxc" ]; then
+    parse_nxc "$3" | run_smblist
+elif [ "$1" = "-nxc" ]; then
+    parse_nxc "$2"
+elif [ -n "$2" ] && [ "$2" != "-o" ]; then
+    run_smblist < "$2"
+else
+    run_smblist
+fi
