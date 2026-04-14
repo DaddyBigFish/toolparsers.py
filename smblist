@@ -2,39 +2,81 @@
 # smblist - Recursively list SMB share contents
 #
 # Usage:
-#   smblist 'user%pass' [shares.txt]            - use existing shares file
-#   smblist 'user%pass' -nxc <nxc_output>       - enumerate from nxc output
-#   smblist -nxc <nxc_output>                   - just parse nxc into share list
-#   smblist 'user%pass' -get '//IP/share/file'  - download a specific file
-#   smblist 'user%pass' -gui [paths.txt]        - launch web gui
-#   smblist 'user%pass' [shares.txt] -o out.txt - output to file and terminal
-#   cat shares.txt | smblist 'user%pass'        - stdin mode
+#   smblist 'user%pass' [shares.txt]              - use existing shares file
+#   smblist 'user%pass' -nxc <nxc_output>         - parse existing nxc output
+#   smblist -nxc <nxc_output>                     - just parse nxc into share list
+#   smblist 'user%pass' -host <host> [hosts.txt]  - run nxc then enumerate
+#   smblist 'user%pass' -get '//host/share/file'  - download a specific file
+#   smblist 'user%pass' -gui [paths.txt]          - launch web gui
+#   smblist 'user%pass' [shares.txt] -o out.txt   - output to file and terminal
+#   cat shares.txt | smblist 'user%pass'          - stdin mode
 
 if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     echo "Usage: smblist 'user%pass' [shares.txt]"
     echo "       smblist 'user%pass' -nxc <nxc_output_file>"
     echo "       smblist -nxc <nxc_output_file>"
-    echo "       smblist 'user%pass' -get '//IP/share/path/to/file'"
+    echo "       smblist 'user%pass' -host <HOST.DOMAIN or IP>"
+    echo "       smblist 'user%pass' -host <hosts.txt>"
+    echo "       smblist 'user%pass' -get '//host/share/path/to/file'"
     echo "       smblist 'user%pass' -gui [paths.txt]"
     echo "       smblist 'user%pass' [shares.txt] -o output.txt"
     echo ""
     echo "Shares file format (one per line):"
     echo "  //IP/sharename"
-    echo "  //IP/share with spaces"
+    echo "  //hostname.domain/share with spaces"
     exit 1
 fi
 
 parse_nxc() {
-    grep 'READ' "$1" | awk '{
-        for(i=1;i<=NF;i++){
-            if($i ~ /^READ/){
-                share=""
-                for(j=5;j<i;j++) share=share($j)(j<i-1?" ":"")
-                print "//"$2"/"share
-                break
-            }
-        }
-    }' | grep -v 'IPC\$'
+    python3 -c "
+import sys, re
+lines = open(sys.argv[1]).readlines()
+hostmap = {}
+for line in lines:
+    nm = re.search(r'\(name:([^)]+)\)', line)
+    dm = re.search(r'\(domain:([^)]+)\)', line)
+    im = re.search(r'SMB\s+([\d.]+)', line)
+    if im and nm and dm:
+        hostmap[im.group(1)] = (nm.group(1).strip() + '.' + dm.group(1).strip()).upper()
+for line in lines:
+    if 'READ' not in line:
+        continue
+    im = re.search(r'SMB\s+([\d.]+)', line)
+    m = re.search(r'SMB\s+[\d.]+\s+\d+\s+\S+\s+(.+?)\s+READ', line)
+    if not im or not m:
+        continue
+    share = m.group(1).strip()
+    if share == 'IPC\$':
+        continue
+    host = hostmap.get(im.group(1), im.group(1))
+    print('//' + host + '/' + share)
+" "$1"
+}
+
+parse_nxc_str() {
+    python3 -c "
+import sys, re
+lines = sys.stdin.readlines()
+hostmap = {}
+for line in lines:
+    nm = re.search(r'\(name:([^)]+)\)', line)
+    dm = re.search(r'\(domain:([^)]+)\)', line)
+    im = re.search(r'SMB\s+([\d.]+)', line)
+    if im and nm and dm:
+        hostmap[im.group(1)] = (nm.group(1).strip() + '.' + dm.group(1).strip()).upper()
+for line in lines:
+    if 'READ' not in line:
+        continue
+    im = re.search(r'SMB\s+([\d.]+)', line)
+    m = re.search(r'SMB\s+[\d.]+\s+\d+\s+\S+\s+(.+?)\s+READ', line)
+    if not im or not m:
+        continue
+    share = m.group(1).strip()
+    if share == 'IPC\$':
+        continue
+    host = hostmap.get(im.group(1), im.group(1))
+    print('//' + host + '/' + share)
+"
 }
 
 download_file() {
@@ -64,11 +106,11 @@ for l in sys.stdin:
     if l.startswith('\\\\'):
         path=l.strip()
     elif l.strip():
-        m=re.match(r'^  (.+?)\\s{2,}(\\w+)\\s',l)
+        m=re.match(r'^  (.+?)\s{2,}(\w+)\s',l)
         if not m:continue
         name=m.group(1).strip()
         ftype=m.group(2)
-        if name in ('.','..') or 'blocks' in l or ftype=='D':continue
+        if name in ('.','..') or 'blocks' in l or ftype.startswith('D'):continue
         full=base+path.replace('\\\\','/')+'/'+name
         if full not in seen:
             seen.add(full)
@@ -77,7 +119,48 @@ for l in sys.stdin:
     done
 }
 
+run_host() {
+    local target="$1"
+    local safe=$(echo "$target" | tr '/' '_')
+    local auto_out="smblist_${safe}"
+    echo "[*] Running nxc against $target" >&2
+    local nxc_out
+    nxc_out=$(proxychains netexec smb "$target" -u "$user" -p "$pass" -d "$domain" --shares 2>/dev/null)
+    local shares
+    shares=$(echo "$nxc_out" | parse_nxc_str)
+    if [ -z "$shares" ]; then
+        echo "[-] No readable shares found for $target" >&2
+        return
+    fi
+    echo "[*] Saving to $auto_out" >&2
+    echo "$shares" | while read share; do
+        [ -z "$share" ] && continue
+        smbclient "$share" -U "$creds" -c 'recurse;ls' 2>/dev/null | python3 -c "
+import sys,re
+base,path,seen='$share','',set()
+for l in sys.stdin:
+    l=l.rstrip()
+    if l.startswith('\\\\'):
+        path=l.strip()
+    elif l.strip():
+        m=re.match(r'^  (.+?)\s{2,}(\w+)\s',l)
+        if not m:continue
+        name=m.group(1).strip()
+        ftype=m.group(2)
+        if name in ('.','..') or 'blocks' in l or ftype.startswith('D'):continue
+        full=base+path.replace('\\\\','/')+'/'+name
+        if full not in seen:
+            seen.add(full)
+            print(full)
+" | tee -a "$auto_out"
+    done
+    echo "[+] Done: $auto_out" >&2
+}
+
 creds="$1"
+user=$(echo "$creds" | python3 -c "import sys; c=sys.stdin.read().strip(); print(c.split('/')[1].split('%')[0] if '/' in c else c.split('%')[0])")
+pass=$(echo "$creds" | python3 -c "import sys; c=sys.stdin.read().strip(); print(c.split('%')[1] if '%' in c else '')")
+domain=$(echo "$creds" | python3 -c "import sys; c=sys.stdin.read().strip(); print(c.split('/')[0] if '/' in c else '')")
 
 if [ "$2" = "-gui" ]; then
     pathsfile="${3:-}"
@@ -141,14 +224,14 @@ body{font-family:monospace;background:#0d0d0d;color:#c8c8c8;height:100vh;display
   <div id=left>
     <div id=leftbar>
       <span>filter paths:</span>
-      <input type=text id=filterpath placeholder="keyword,keyword... (comma = OR)" oninput=schedulePathFilter() title="filter the path list — comma separated terms use OR logic">
+      <input type=text id=filterpath placeholder="keyword,keyword... (comma = OR)" oninput=schedulePathFilter()>
     </div>
     <div id=pathList><div style=padding:8px;color:#444>load a file to begin</div></div>
   </div>
   <div id=right>
     <div id=rightbar>
       <span>search in file:</span>
-      <input type=text id=filtercontent placeholder="keyword,keyword... (comma = OR)" oninput=scheduleContentHL() title="highlight terms in the file content — comma separated terms use OR logic">
+      <input type=text id=filtercontent placeholder="keyword,keyword... (comma = OR)" oninput=scheduleContentHL()>
     </div>
     <div id=header>select a path</div>
     <div id=contentarea><pre id=content>click a path to view its contents</pre></div>
@@ -179,7 +262,6 @@ function loadManual(){
     });
 }
 
-// path filter - filters the list independently
 function schedulePathFilter(){
   clearTimeout(pathFilterTimer);
   pathFilterTimer=setTimeout(applyPathFilter,150);
@@ -193,7 +275,6 @@ function applyPathFilter(){
   render(filtered);
 }
 
-// content search - highlights in open file independently, does not affect path list
 function scheduleContentHL(){
   clearTimeout(contentHLTimer);
   contentHLTimer=setTimeout(applyContentHL,150);
@@ -202,23 +283,13 @@ function scheduleContentHL(){
 function applyContentHL(){
   if(!lastContent)return;
   document.getElementById('content').innerHTML=highlight(lastContent);
-  const hits=countHL(lastContent);
-  const rbar=document.getElementById('rightbar');
-  const old=rbar.querySelector('.hitcount');
-  if(old)old.remove();
-  if(hits>0){
-    const s=document.createElement('span');
-    s.className='hitcount';
-    s.style.cssText='font-size:10px;color:#ff8;white-space:nowrap;margin-left:4px';
-    s.textContent=hits+' match'+(hits===1?'':'es');
-    rbar.appendChild(s);
-  }
+  updateHitCount(lastContent);
 }
 
 function render(paths){
   document.getElementById('status').textContent=paths.length+' / '+all.length+' paths';
   const list=document.getElementById('pathList');
-  const renderID = Date.now();
+  const renderID=Date.now();
   list.dataset.renderid=renderID;
   list.innerHTML='';
   let i=0;
@@ -242,16 +313,14 @@ function render(paths){
 }
 
 function proxy(){return document.getElementById('useProxy').checked?1:0;}
-
 function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function escRe(s){return s.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&');}
+function escRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 
 function highlight(text){
   const val=document.getElementById('filtercontent').value.trim();
   let result=escHtml(text);
   if(!val)return result;
-  const terms=val.split(',').map(t=>t.trim()).filter(Boolean);
-  terms.forEach(t=>{
+  val.split(',').map(t=>t.trim()).filter(Boolean).forEach(t=>{
     const re=new RegExp(escRe(escHtml(t)),'gi');
     result=result.replace(re,m=>'<span class=hl>'+m+'</span>');
   });
@@ -261,14 +330,27 @@ function highlight(text){
 function countHL(text){
   const val=document.getElementById('filtercontent').value.trim();
   if(!val)return 0;
-  const terms=val.split(',').map(t=>t.trim()).filter(Boolean);
   let total=0;
-  terms.forEach(t=>{
+  val.split(',').map(t=>t.trim()).filter(Boolean).forEach(t=>{
     const re=new RegExp(escRe(escHtml(t)),'gi');
-    const matches=escHtml(text).match(re);
-    if(matches)total+=matches.length;
+    const m=escHtml(text).match(re);
+    if(m)total+=m.length;
   });
   return total;
+}
+
+function updateHitCount(text){
+  const rbar=document.getElementById('rightbar');
+  const old=rbar.querySelector('.hitcount');
+  if(old)old.remove();
+  const hits=countHL(text);
+  if(hits>0){
+    const s=document.createElement('span');
+    s.className='hitcount';
+    s.style.cssText='font-size:10px;color:#ff8;white-space:nowrap;margin-left:4px';
+    s.textContent=hits+' match'+(hits===1?'':'es');
+    rbar.appendChild(s);
+  }
 }
 
 function sel(el,path){
@@ -286,17 +368,7 @@ function sel(el,path){
       if(d.ok){
         lastContent=d.content;
         c.innerHTML=highlight(d.content);
-        const hits=countHL(d.content);
-        const rbar=document.getElementById('rightbar');
-        const old=rbar.querySelector('.hitcount');
-        if(old)old.remove();
-        if(hits>0){
-          const s=document.createElement('span');
-          s.className='hitcount';
-          s.style.cssText='font-size:10px;color:#ff8;white-space:nowrap;margin-left:4px';
-          s.textContent=hits+' match'+(hits===1?'':'es');
-          rbar.appendChild(s);
-        }
+        updateHitCount(d.content);
       } else {
         c.textContent=d.msg;
       }
@@ -321,6 +393,8 @@ function clearRight(){
   document.getElementById('header').textContent='select a path';
   document.getElementById('content').textContent='click a path to view its contents';
   document.getElementById('bottom').style.display='none';
+  const old=document.getElementById('rightbar').querySelector('.hitcount');
+  if(old)old.remove();
 }
 </script></body></html>"""
 
@@ -421,12 +495,31 @@ done
 
 if [ "$2" = "-get" ]; then
     download_file "$3"
+
+elif [ "$2" = "-host" ]; then
+    target="$3"
+    if [ -f "$target" ]; then
+        # it's a file — run each host
+        while read host; do
+            [ -z "$host" ] && continue
+            outfile="smblist_${host}"
+            run_host "$host"
+        done < "$target"
+    else
+        # single host
+        outfile="smblist_${target}"
+        run_host "$target"
+    fi
+
 elif [ "$2" = "-nxc" ]; then
     parse_nxc "$3" | run_smblist
+
 elif [ "$1" = "-nxc" ]; then
     parse_nxc "$2"
+
 elif [ -n "$2" ] && [ "$2" != "-o" ]; then
     run_smblist < "$2"
+
 else
     run_smblist
 fi
