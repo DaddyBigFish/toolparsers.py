@@ -57,17 +57,19 @@ run_smblist() {
     while read share; do
         [ -z "$share" ] && continue
         smbclient "$share" -U "$creds" -c 'recurse;ls' 2>/dev/null | python3 -c "
-import sys
+import sys,re
 base,path,seen='$share','',set()
 for l in sys.stdin:
     l=l.rstrip()
     if l.startswith('\\\\'):
         path=l.strip()
     elif l.strip():
-        p=l.strip().split()
-        if p[0] in ('.','..') or 'blocks' in l or len(p)<2 or p[1]=='D':
-            continue
-        full=base+path.replace('\\\\','/')+'/'+p[0]
+        m=re.match(r'^  (.+?)\\s{2,}(\\w+)\\s',l)
+        if not m:continue
+        name=m.group(1).strip()
+        ftype=m.group(2)
+        if name in ('.','..') or 'blocks' in l or ftype=='D':continue
+        full=base+path.replace('\\\\','/')+'/'+name
         if full not in seen:
             seen.add(full)
             print(full)
@@ -360,8 +362,9 @@ class Handler(BaseHTTPRequestHandler):
 
         elif p.path == '/cat':
             path = qs.get('path',[''])[0]
-            share = '/'.join(path.split('/')[:4])
-            filepath = '/'+'/'.join(path.split('/')[4:])
+            parts = path.split('/',4)
+            share = '/'.join(parts[:4]) if len(parts)>=4 else path
+            filepath = '/'+parts[4] if len(parts)>4 else '/'
             result = run_cmd(
                 ['smbclient', share, '-U', creds, '-c', f'get "{filepath}" /tmp/smblist_preview'],
                 use_proxy
@@ -379,8 +382,9 @@ class Handler(BaseHTTPRequestHandler):
 
         elif p.path == '/download':
             path = qs.get('path',[''])[0]
-            share = '/'.join(path.split('/')[:4])
-            filepath = '/'+'/'.join(path.split('/')[4:])
+            parts = path.split('/',4)
+            share = '/'.join(parts[:4]) if len(parts)>=4 else path
+            filepath = '/'+parts[4] if len(parts)>4 else '/'
             d = os.path.dirname(filepath)
             f = os.path.basename(filepath)
             result = run_cmd(
