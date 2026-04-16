@@ -842,6 +842,10 @@ function clearRight(){
 def start_gui(creds, pathsfile=''):
     domain, user, passwd = parse_creds(creds)
 
+    # temp dir for file previews
+    tmp_dir = os.path.join(os.getcwd(), 'smblist', '.tmp')
+    os.makedirs(tmp_dir, exist_ok=True)
+
     live_paths = []
     paths_lock = threading.Lock()
     jobs = {}
@@ -851,6 +855,21 @@ def start_gui(creds, pathsfile=''):
     if pathsfile and os.path.exists(pathsfile):
         with open(pathsfile) as f:
             live_paths = [l.strip() for l in f if l.strip()]
+    else:
+        # auto-load any smblist_* files in cwd
+        seen = set()
+        for fname in sorted(os.listdir('.')):
+            if fname.startswith('smblist_') and os.path.isfile(fname):
+                try:
+                    with open(fname) as f:
+                        for line in f:
+                            p = line.strip()
+                            if p and p not in seen:
+                                seen.add(p)
+                                live_paths.append(p)
+                    print(f'[*] auto-loaded: {fname} ({len(live_paths)} paths total)', file=sys.stderr)
+                except Exception:
+                    pass
 
     def bg_run_host(job_id, host, use_proxy):
         def setstatus(s):
@@ -956,7 +975,7 @@ def start_gui(creds, pathsfile=''):
                     mb = int(sm.group(1)) // (1024 * 1024)
                     self.send_json({'ok': False, 'msg': f'file too large to preview ({mb} MB) — use download'})
                     return
-                tmppath = f'/tmp/smblist_preview_{threading.get_ident()}'
+                tmppath = os.path.join(tmp_dir, f'preview_{threading.get_ident()}')
                 result = run_cmd(
                     ['smbclient', share, '-U', creds, '-c',
                      f'get "{filepath}" "{tmppath}"'],
