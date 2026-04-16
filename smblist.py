@@ -232,6 +232,11 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 .thost{padding:4px 8px 4px 10px;display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;border-radius:6px;margin:1px 6px;user-select:none;transition:background .1s}
 .thost:hover{background:var(--bg3)}
 .thost.sel{background:var(--ac-bg)}
+.thost.pick{background:rgba(47,129,247,.18);outline:1px solid rgba(47,129,247,.4);outline-offset:-1px}
+#treesel{padding:6px 10px;border-bottom:1px solid var(--bd-s);background:var(--bg3);display:none;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap}
+#treesel span{font-size:11px;color:var(--tx-m);white-space:nowrap}
+#treesel select{background:var(--bg1);border:1px solid var(--bd);color:var(--tx);padding:3px 6px;font-size:11px;border-radius:5px;outline:none;cursor:pointer}
+#treesel select:focus{border-color:var(--ac)}
 .thost.dragging{opacity:.25}
 .thdrag{color:var(--bd);font-size:11px;flex-shrink:0;cursor:grab;line-height:1;opacity:0;transition:opacity .1s}
 .thost:hover .thdrag{opacity:1}
@@ -296,8 +301,28 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 .cmitem.danger{color:#a55}
 .cmitem.danger:hover{background:var(--red-bg);color:var(--red)}
 .cmsep{height:1px;background:var(--bd-s);margin:3px 0}
+/* === modal === */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:10000;display:flex;align-items:center;justify-content:center}
+.modal{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:20px;width:420px;max-width:90vw;box-shadow:0 16px 48px rgba(0,0,0,.7);display:flex;flex-direction:column;gap:12px}
+.modal-title{font-size:13px;font-weight:700;color:var(--tx);letter-spacing:-.01em}
+.modal-sub{font-size:11px;color:var(--tx-d)}
+.modal textarea{background:var(--bg1);border:1px solid var(--bd);color:var(--tx);padding:8px 10px;font-family:var(--mono);font-size:11px;border-radius:6px;outline:none;resize:vertical;min-height:160px;line-height:1.6;transition:border-color .15s,box-shadow .15s}
+.modal textarea:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-m)}
+.modal textarea::placeholder{color:var(--tx-d)}
+.modal-foot{display:flex;gap:8px;justify-content:flex-end}
 </style></head>
 <body>
+<div id=hostmodal style="display:none" class=modal-overlay onclick="if(event.target===this)closeHostModal()">
+  <div class=modal>
+    <div class=modal-title>Scan multiple hosts</div>
+    <div class=modal-sub>One host / FQDN / CIDR per line</div>
+    <textarea id=hostlist placeholder="host1.domain.com&#10;host2.domain.com&#10;192.168.1.0/24"></textarea>
+    <div class=modal-foot>
+      <button class=btn onclick=closeHostModal()>cancel</button>
+      <button class="btn btn-accent" onclick=submitHostList()>Get Shares</button>
+    </div>
+  </div>
+</div>
 <div id=top>
   <div id=brand>
     <div id=brand-mark>sm</div>
@@ -316,6 +341,7 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
     <span class=t-lbl>Domain:</span>
     <input type=text class=tbi id=hostinput placeholder="FQDN" onkeydown="if(event.key==='Enter')addHost()">
     <button class="btn btn-accent" onclick=addHost()>Get Shares</button>
+    <button class=btn onclick=openHostModal() title="Scan a list of hosts">paste list</button>
   </div>
   <div class=t-sep></div>
   <label class=cb-lbl><input type=checkbox id=useProxy checked> proxychains</label>
@@ -329,6 +355,12 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
     <div id=treeheader>
       <span>hosts</span>
       <button onclick=addGroup()>+ group</button>
+    </div>
+    <div id=treesel>
+      <span id=treeselcount></span>
+      <select id=treeseldest></select>
+      <button class=btn style="padding:3px 10px;font-size:11px" onclick=addSelectedToGroup()>add to group</button>
+      <button class=btn style="padding:3px 8px;font-size:11px" onclick=clearSel()>✕ clear</button>
     </div>
     <div id=treebody></div>
   </div>
@@ -383,6 +415,7 @@ function showPreview(d){
 
 // tree state — groups store hostnames, not job ids
 let groups=[];        // [{id,name,hostnames:[],collapsed:bool}]
+let selectedHosts=new Set(),lastSelHost=null;
 let activeFilter=null; // null | {type:'host',hostname} | {type:'group',groupId}
 let allPaths=[];
 let allJobs={};
@@ -405,7 +438,8 @@ function ungroupedHosts(hosts){
 
 // ── init ──
 loadGroups();
-fetch('/paths').then(r=>r.json()).then(d=>{allPaths=d;all=d;exts.clear();go();renderTree();});
+function loadPaths(){fetch('/paths').then(r=>r.json()).then(d=>{allPaths=d;all=d;exts.clear();go();renderTree();});}
+loadPaths();
 fetch('/jobs').then(r=>r.json()).then(d=>{
   allJobs=d;renderJobs(d);
   if(Object.values(d).some(j=>j.status!=='done'&&j.status!=='error'))startPolling();
@@ -435,9 +469,45 @@ function addHost(){
   fetch('/addhost?host='+encodeURIComponent(h)+'&proxy='+proxy())
     .then(r=>r.json()).then(d=>{
       if(d.ok){document.getElementById('hostinput').value='';startPolling();poll();}
-      else document.getElementById('status').innerHTML='<span class=err>[-] '+d.msg+'</span>';
+      else if(d.skip)document.getElementById('status').innerHTML='<span class=err>[!] '+esc(d.msg)+'</span>';
+      else document.getElementById('status').innerHTML='<span class=err>[-] '+esc(d.msg)+'</span>';
     });
 }
+function openHostModal(){
+  document.getElementById('hostmodal').style.display='flex';
+  document.getElementById('hostlist').focus();
+}
+function closeHostModal(){
+  document.getElementById('hostmodal').style.display='none';
+  document.getElementById('hostlist').value='';
+}
+function submitHostList(){
+  const hosts=document.getElementById('hostlist').value
+    .split(/[\\n,]+/).map(h=>h.trim()).filter(Boolean);
+  if(!hosts.length)return;
+  closeHostModal();
+  document.getElementById('status').textContent='[*] queuing '+hosts.length+' host(s)...';
+  let queued=0,skipped=0,pollingStarted=false;
+  function next(i){
+    if(i>=hosts.length){
+      const parts=[];
+      if(queued>0)parts.push(queued+' queued');
+      if(skipped>0)parts.push(skipped+' already scanned');
+      if(parts.length)document.getElementById('status').textContent='[*] '+parts.join(', ');
+      return;
+    }
+    fetch('/addhost?host='+encodeURIComponent(hosts[i])+'&proxy='+proxy())
+      .then(r=>r.json()).then(d=>{
+        if(d.ok){
+          queued++;
+          if(!pollingStarted){pollingStarted=true;startPolling();poll();}
+        } else if(d.skip){skipped++;}
+        next(i+1);
+      });
+  }
+  next(0);
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHostModal();});
 
 // ── polling ──
 function startPolling(){if(pollTimer)return;pollTimer=setInterval(poll,2000);}
@@ -564,10 +634,39 @@ function makeUngroupedEl(hosts){
   return wrap;
 }
 
+function clearSel(){selectedHosts.clear();lastSelHost=null;updateSelBar();renderTree();}
+function updateSelBar(){
+  const bar=document.getElementById('treesel');
+  if(selectedHosts.size===0){bar.style.display='none';return;}
+  bar.style.display='flex';
+  document.getElementById('treeselcount').textContent=selectedHosts.size+' host'+(selectedHosts.size>1?'s':'')+' selected';
+  const sel=document.getElementById('treeseldest');
+  sel.innerHTML=groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')
+    +'<option value="__new__">+ new group</option>';
+}
+function addSelectedToGroup(){
+  const sel=document.getElementById('treeseldest');
+  let gid=sel.value;
+  if(gid==='__new__'){
+    const name=prompt('Group name:');
+    if(!name||!name.trim())return;
+    gid='g'+Date.now();
+    groups.push({id:gid,name:name.trim().toUpperCase(),hostnames:[],collapsed:false});
+  }
+  const g=groups.find(x=>x.id===gid);
+  if(!g)return;
+  selectedHosts.forEach(h=>{
+    groups.forEach(gr=>{gr.hostnames=gr.hostnames.filter(x=>x!==h);});
+    if(!g.hostnames.includes(h))g.hostnames.push(h);
+  });
+  saveGroups();clearSel();
+}
+
 function makeHostEl(hostname,pathCount,sourceGroupId){
   const isSel=activeFilter&&activeFilter.type==='host'&&activeFilter.hostname===hostname;
+  const isPick=selectedHosts.has(hostname);
   const div=document.createElement('div');
-  div.className='thost'+(isSel?' sel':'');
+  div.className='thost'+(isSel?' sel':'')+(isPick?' pick':'');
   div.draggable=true;
 
   div.addEventListener('dragstart',e=>{
@@ -577,7 +676,20 @@ function makeHostEl(hostname,pathCount,sourceGroupId){
     setTimeout(()=>div.classList.add('dragging'),0);
   });
   div.addEventListener('dragend',()=>{div.classList.remove('dragging');});
-  div.onclick=()=>setFilter({type:'host',hostname});
+  div.onclick=e=>{
+    if(e.shiftKey){
+      const allH=hostsFromPaths(allPaths);
+      const curIdx=allH.indexOf(hostname);
+      const lastIdx=lastSelHost?allH.indexOf(lastSelHost):curIdx;
+      const lo=Math.min(curIdx,lastIdx),hi=Math.max(curIdx,lastIdx);
+      for(let i=lo;i<=hi;i++)selectedHosts.add(allH[i]);
+      lastSelHost=hostname;
+      updateSelBar();renderTree();
+    } else {
+      if(selectedHosts.size>0){clearSel();return;}
+      setFilter({type:'host',hostname});
+    }
+  };
 
   const drag=document.createElement('span');
   drag.className='thdrag';drag.textContent='⠿';
@@ -764,7 +876,7 @@ function render(paths){
       spacer.appendChild(d);
     }
   }
-  list.onscroll=paint;paint();
+  list.onscroll=paint;paint();requestAnimationFrame(()=>{lastStart=-1;paint();});
 }
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function escRe(s){return s.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&');}
@@ -924,6 +1036,7 @@ def start_gui(creds, pathsfile=''):
         def send_json(self, data):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
+            self.send_header('Cache-Control', 'no-cache, no-store')
             self.end_headers()
             self.wfile.write(json.dumps(data).encode())
 
@@ -935,6 +1048,7 @@ def start_gui(creds, pathsfile=''):
             if p.path == '/':
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html')
+                self.send_header('Cache-Control', 'no-cache, no-store')
                 self.end_headers()
                 self.wfile.write(HTML.encode())
 
@@ -952,6 +1066,15 @@ def start_gui(creds, pathsfile=''):
                 host = qs.get('host', [''])[0].strip()
                 if not host:
                     self.send_json({'ok': False, 'msg': 'no host provided'})
+                    return
+                # skip if already scanned or currently running
+                with jobs_lock:
+                    already = any(j['host'].lower() == host.lower() for j in jobs.values())
+                if not already:
+                    with paths_lock:
+                        already = any(p.lower().startswith(f'//{host.lower()}/') for p in live_paths)
+                if already:
+                    self.send_json({'ok': False, 'msg': f'{host} already scanned', 'skip': True})
                     return
                 with jobs_lock:
                     job_counter[0] += 1
