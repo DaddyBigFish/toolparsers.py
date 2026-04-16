@@ -198,6 +198,7 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 .jstat.error{color:var(--red)}
 .jcount{color:var(--green);font-size:10px}
 .jnote{color:var(--red);font-size:10px}
+.jcur{color:var(--tx-d);font-size:10px;font-family:var(--mono);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .spinner{display:inline-block;width:9px;height:9px;border:1.5px solid var(--bd);border-top-color:var(--ac);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -362,6 +363,23 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 const ROW_H=20;
 let all=[],cur=null,ft=null,hlt=null,lastContent='',filtered=[],displayed=[],exts=new Set(),fnOnly=false,uniqueNames=false;
 let pollTimer=null;
+let activeCtrl=null,activeTid=null;
+const previewCache=new Map();
+const CACHE_MAX=30;
+function cachePut(path,data){if(previewCache.size>=CACHE_MAX)previewCache.delete(previewCache.keys().next().value);previewCache.set(path,data);}
+function showPreview(d){
+  const c=document.getElementById('content');
+  if(d.ok){
+    lastContent=d.content;c.innerHTML=hl(d.content);hitcount(d.content);
+    if(d.truncated){
+      const w=document.createElement('div');w.id='trunc-warn';
+      w.style.cssText='color:var(--yellow);font-size:11px;margin-bottom:10px;font-family:var(--ui)';
+      w.textContent='[preview truncated at 512 KB — use download to get the full file]';
+      document.getElementById('contentarea').prepend(w);
+    }
+  } else {c.textContent=d.msg;}
+  document.getElementById('bottom').style.display='block';
+}
 
 // tree state — groups store hostnames, not job ids
 let groups=[];        // [{id,name,hostnames:[],collapsed:bool}]
@@ -441,15 +459,14 @@ function poll(){
 // ── jobs panel ──
 function renderJobs(jobdata){
   const panel=document.getElementById('jobspanel');
-  const entries=Object.values(jobdata);
-  if(!entries.length){panel.style.display='none';return;}
+  const active=Object.values(jobdata).filter(j=>j.status!=='done'&&j.status!=='error');
+  if(!active.length){panel.style.display='none';return;}
   panel.style.display='flex';
-  panel.innerHTML='<span class=jlbl>scanning:</span>'+entries.map(j=>{
-    const cls=j.status==='done'?'done':j.status==='error'?'error':'active';
-    const spin=cls==='active'?'<span class=spinner></span>':'';
+  panel.innerHTML='<span class=jlbl>scanning:</span>'+active.map(j=>{
+    const spin='<span class=spinner></span>';
     const count=j.found>0?`<span class=jcount>${j.found} paths</span>`:'';
-    const note=j.note?`<span class=jnote>${j.note}</span>`:'';
-    return `<span class=job>${spin}<span class=jhost>${esc(j.host)}</span><span class="jstat ${cls}">${j.status}</span>${count}${note}</span>`;
+    const cur=j.current?`<span class=jcur title="${esc(j.current)}">${esc(j.current.split('/').pop()||j.current)}</span>`:'';
+    return `<span class=job>${spin}<span class=jhost>${esc(j.host)}</span><span class="jstat active">${esc(j.status)}</span>${count}${cur}</span>`;
   }).join('');
 }
 
@@ -776,32 +793,26 @@ function hitcount(text){
 }
 function proxy(){return document.getElementById('useProxy').checked?1:0;}
 function sel(el,path){
+  // abort any in-flight request
+  if(activeCtrl){clearTimeout(activeTid);activeCtrl.abort();activeCtrl=null;activeTid=null;}
   document.querySelectorAll('.path').forEach(e=>e.classList.remove('active'));
   el.classList.add('active');cur=path;
   document.getElementById('header').textContent=path;
-  document.getElementById('content').textContent='loading...';
   document.getElementById('bottom').style.display='none';
   const oldWarn=document.getElementById('trunc-warn');if(oldWarn)oldWarn.remove();
   lastContent='';
-  const ctrl=new AbortController();
-  const tid=setTimeout(()=>ctrl.abort(),35000);
-  fetch('/cat?path='+encodeURIComponent(path)+'&proxy='+proxy(),{signal:ctrl.signal})
+  // serve from cache if available
+  if(previewCache.has(path)){showPreview(previewCache.get(path));return;}
+  document.getElementById('content').textContent='loading...';
+  activeCtrl=new AbortController();
+  activeTid=setTimeout(()=>{if(activeCtrl)activeCtrl.abort();},35000);
+  fetch('/cat?path='+encodeURIComponent(path)+'&proxy='+proxy(),{signal:activeCtrl.signal})
     .then(r=>r.json()).then(d=>{
-      clearTimeout(tid);
-      const c=document.getElementById('content');
-      if(d.ok){
-        lastContent=d.content;c.innerHTML=hl(d.content);hitcount(d.content);
-        if(d.truncated){
-          const w=document.createElement('div');
-          w.id='trunc-warn';
-          w.style.cssText='color:var(--yellow);font-size:11px;margin-bottom:10px;font-family:var(--ui)';
-          w.textContent='[preview truncated at 512 KB — use download to get the full file]';
-          document.getElementById('contentarea').prepend(w);
-        }
-      } else {c.textContent=d.msg;}
-      document.getElementById('bottom').style.display='block';
+      clearTimeout(activeTid);activeCtrl=null;activeTid=null;
+      if(d.ok)cachePut(path,d);
+      showPreview(d);
     }).catch(e=>{
-      clearTimeout(tid);
+      clearTimeout(activeTid);activeCtrl=null;activeTid=null;
       const c=document.getElementById('content');
       c.textContent=e.name==='AbortError'?'timed out reading file — use download to get it':'error reading file';
       document.getElementById('bottom').style.display='block';
@@ -841,10 +852,6 @@ function clearRight(){
 
 def start_gui(creds, pathsfile=''):
     domain, user, passwd = parse_creds(creds)
-
-    # temp dir for file previews
-    tmp_dir = os.path.join(os.getcwd(), 'smblist', '.tmp')
-    os.makedirs(tmp_dir, exist_ok=True)
 
     live_paths = []
     paths_lock = threading.Lock()
@@ -901,6 +908,7 @@ def start_gui(creds, pathsfile=''):
                             live_paths.extend(new_paths)
                         with jobs_lock:
                             jobs[job_id]['found'] += len(new_paths)
+                            jobs[job_id]['current'] = new_paths[-1]
                         fh.write('\n'.join(new_paths) + '\n')
                         fh.flush()
 
@@ -948,7 +956,7 @@ def start_gui(creds, pathsfile=''):
                 with jobs_lock:
                     job_counter[0] += 1
                     job_id = str(job_counter[0])
-                    jobs[job_id] = {'host': host, 'status': 'queued', 'found': 0, 'note': ''}
+                    jobs[job_id] = {'host': host, 'status': 'queued', 'found': 0, 'note': '', 'current': ''}
                 threading.Thread(
                     target=bg_run_host, args=(job_id, host, use_proxy), daemon=True
                 ).start()
@@ -966,19 +974,11 @@ def start_gui(creds, pathsfile=''):
             elif p.path == '/cat':
                 path = qs.get('path', [''])[0]
                 share, d, fname = parse_smb_path(path)
-                filepath = d + '/' + fname if fname else d
-                MAX_PREVIEW = 5 * 1024 * 1024
-                info = run_cmd(['smbclient', share, '-U', creds, '-c',
-                                f'allinfo "{filepath}"'], use_proxy, timeout=10)
-                sm = re.search(r'stream.*?(\d+)\s+bytes', info.stdout, re.IGNORECASE)
-                if sm and int(sm.group(1)) > MAX_PREVIEW:
-                    mb = int(sm.group(1)) // (1024 * 1024)
-                    self.send_json({'ok': False, 'msg': f'file too large to preview ({mb} MB) — use download'})
-                    return
-                tmppath = os.path.join(tmp_dir, f'preview_{threading.get_ident()}')
+                filepath = d.rstrip('/') + '/' + fname if fname else d
+                tmppath = f'/tmp/smblist_preview_{threading.get_ident()}'
                 result = run_cmd(
                     ['smbclient', share, '-U', creds, '-c',
-                     f'get "{filepath}" "{tmppath}"'],
+                     f'get "{filepath}" {tmppath}'],
                     use_proxy, timeout=30
                 )
                 try:
