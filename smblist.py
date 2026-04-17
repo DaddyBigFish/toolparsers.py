@@ -15,6 +15,7 @@ creds format: domain/user%pass
 """
 
 import sys, os, re, subprocess, threading, webbrowser, json, time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
 
@@ -257,15 +258,14 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 .thost:hover{background:var(--bg3)}
 .thost.sel{background:var(--ac-bg)}
 .thost.pick{background:rgba(47,129,247,.18);outline:1px solid rgba(47,129,247,.4);outline-offset:-1px}
+.thost-cb{width:11px;height:11px;accent-color:var(--ac);cursor:pointer;flex-shrink:0;opacity:0;transition:opacity .1s;margin-right:1px}
+.thost:hover .thost-cb,.thost-cb:checked{opacity:1}
 #treesel{padding:6px 10px;border-bottom:1px solid var(--bd-s);background:var(--bg3);display:none;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap}
 #treesel span{font-size:11px;color:var(--tx-m);white-space:nowrap}
 #treesel select{background:var(--bg1);border:1px solid var(--bd);color:var(--tx);padding:3px 6px;font-size:11px;border-radius:5px;outline:none;cursor:pointer}
 #treesel select:focus{border-color:var(--ac)}
 .thost.dragging{opacity:.25}
-.thdrag{color:var(--bd);font-size:11px;flex-shrink:0;cursor:grab;line-height:1;opacity:0;transition:opacity .1s}
-.thost:hover .thdrag{opacity:1}
-.thdrag:hover{color:var(--tx-d)}
-.thostname{flex:1;color:var(--tx-s);overflow:hidden;text-overflow:ellipsis;font-size:11px;font-family:var(--mono);letter-spacing:-.02em}
+.thostname{flex:1;color:var(--tx-s);overflow:hidden;text-overflow:ellipsis;font-size:11px;font-family:var(--mono);letter-spacing:-.02em;cursor:grab}
 .thost.sel .thostname{color:var(--ac-tx)}
 .thostcount{font-size:10px;color:var(--tx-d);flex-shrink:0;min-width:24px;text-align:right;font-family:var(--mono)}
 .thost.sel .thostcount{color:var(--ac-tx);opacity:.6}
@@ -370,7 +370,7 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
   <div class=t-sep></div>
   <div class=t-grp>
     <span class=t-lbl>DNS:</span>
-    <input type=text class=tbi id=dnsinput placeholder="DC IP" style="width:110px" oninput=updateDns()>
+    <input type=text class=tbi id=dnsinput placeholder="DC IP / FQDN" style="width:130px" oninput=updateDns()>
   </div>
   <div class=t-sep></div>
   <label class=cb-lbl><input type=checkbox id=useProxy checked> proxychains</label>
@@ -423,7 +423,7 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 <script>
 const ROW_H=20;
 let all=[],cur=null,ft=null,hlt=null,lastContent='',filtered=[],displayed=[],exts=new Set(),fnOnly=false,uniqueNames=false;
-let pollTimer=null;
+let pollTimer=null,dlPollTimer=null;
 let activeCtrl=null,activeTid=null;
 const previewCache=new Map();
 const CACHE_MAX=30;
@@ -467,7 +467,11 @@ function ungroupedHosts(hosts){
 
 // ── init ──
 loadGroups();
-function loadPaths(){fetch('/paths').then(r=>r.json()).then(d=>{allPaths=d;all=d;exts.clear();go();renderTree();});}
+function loadPaths(){
+  document.getElementById('status').innerHTML='<span class=spinner></span> loading...';
+  document.getElementById('treebody').innerHTML='<div style="padding:16px 14px;font-size:11px;color:var(--tx-d);display:flex;align-items:center;gap:8px"><span class=spinner></span>loading hosts...</div>';
+  fetch('/paths').then(r=>r.json()).then(d=>{allPaths=d;all=d;exts.clear();go();renderTree();});
+}
 loadPaths();
 fetch('/jobs').then(r=>r.json()).then(d=>{
   allJobs=d;renderJobs(d);
@@ -582,9 +586,13 @@ function renderJobs(jobdata){
 }
 
 // ── tree rendering ──
+let _hostPathCounts={};
 function renderTree(){
   const hosts=hostsFromPaths(allPaths);
   const ug=ungroupedHosts(hosts);
+  // build count map once — O(paths) instead of O(hosts*paths)
+  _hostPathCounts={};
+  allPaths.forEach(p=>{const m=p.match(/^\/\/([^/]+)/);if(m)_hostPathCounts[m[1]]=(_hostPathCounts[m[1]]||0)+1;});
   const body=document.getElementById('treebody');
   body.innerHTML='';
 
@@ -647,8 +655,7 @@ function makeGroupEl(group){
   };
 
   group.hostnames.forEach(h=>{
-    const pathCount=allPaths.filter(p=>p.startsWith('//'+h+'/')).length;
-    bodyEl.appendChild(makeHostEl(h,pathCount,group.id));
+    bodyEl.appendChild(makeHostEl(h,_hostPathCounts[h]||0,group.id));
   });
 
   wrap.appendChild(head);wrap.appendChild(bodyEl);
@@ -669,8 +676,7 @@ function makeUngroupedEl(hosts){
   wrap.appendChild(lbl);
 
   hosts.forEach(h=>{
-    const pathCount=allPaths.filter(p=>p.startsWith('//'+h+'/')).length;
-    wrap.appendChild(makeHostEl(h,pathCount,null));
+    wrap.appendChild(makeHostEl(h,_hostPathCounts[h]||0,null));
   });
   return wrap;
 }
@@ -718,22 +724,31 @@ function makeHostEl(hostname,pathCount,sourceGroupId){
   });
   div.addEventListener('dragend',()=>{div.classList.remove('dragging');});
   div.onclick=e=>{
-    if(e.shiftKey){
-      const allH=hostsFromPaths(allPaths);
-      const curIdx=allH.indexOf(hostname);
-      const lastIdx=lastSelHost?allH.indexOf(lastSelHost):curIdx;
-      const lo=Math.min(curIdx,lastIdx),hi=Math.max(curIdx,lastIdx);
-      for(let i=lo;i<=hi;i++)selectedHosts.add(allH[i]);
-      lastSelHost=hostname;
-      updateSelBar();renderTree();
-    } else {
-      if(selectedHosts.size>0){clearSel();return;}
-      setFilter({type:'host',hostname});
-    }
+    if(e.target===cb)return;
+    setFilter({type:'host',hostname});
   };
 
-  const drag=document.createElement('span');
-  drag.className='thdrag';drag.textContent='⠿';
+  const cb=document.createElement('input');
+  cb.type='checkbox';cb.className='thost-cb';cb.checked=isPick;
+  cb.addEventListener('click',e=>{
+    e.stopPropagation();
+    if(e.shiftKey&&cb.checked&&lastSelHost){
+      const visible=[...document.querySelectorAll('.thost .thostname')].map(n=>n.title);
+      const lo=Math.min(visible.indexOf(hostname),visible.indexOf(lastSelHost));
+      const hi=Math.max(visible.indexOf(hostname),visible.indexOf(lastSelHost));
+      for(let i=lo;i<=hi;i++)selectedHosts.add(visible[i]);
+      document.querySelectorAll('.thost').forEach(el=>{
+        const n=el.querySelector('.thostname'),c=el.querySelector('.thost-cb');
+        if(n&&c){const on=selectedHosts.has(n.title);c.checked=on;el.classList.toggle('pick',on);}
+      });
+    } else {
+      if(cb.checked){selectedHosts.add(hostname);}
+      else selectedHosts.delete(hostname);
+      div.classList.toggle('pick',cb.checked);
+    }
+    lastSelHost=hostname;
+    updateSelBar();
+  });
 
   const nm=document.createElement('span');
   nm.className='thostname';nm.title=hostname;nm.textContent=hostname;
@@ -741,7 +756,7 @@ function makeHostEl(hostname,pathCount,sourceGroupId){
   const cnt=document.createElement('span');
   cnt.className='thostcount';cnt.textContent=pathCount||'';
 
-  div.appendChild(drag);div.appendChild(nm);div.appendChild(cnt);
+  div.appendChild(cb);div.appendChild(nm);div.appendChild(cnt);
   return div;
 }
 
@@ -854,7 +869,7 @@ function getExt(p){const m=p.match(/\\.([a-zA-Z0-9]+)$/);return m?m[1].toLowerCa
 function go(){
   const val=document.getElementById('filterpath').value.trim();
   let tf=all;
-  if(val){const terms=val.toLowerCase().split(',').map(t=>t.trim()).filter(Boolean);tf=all.filter(p=>terms.some(t=>p.toLowerCase().includes(t)));}
+  if(val){const terms=val.toLowerCase().split(',').map(t=>t.trim()).filter(Boolean);tf=all.filter(p=>{const target=fnOnly?(p.split('/').pop()||p).toLowerCase():p.toLowerCase();return terms.some(t=>target.includes(t));});}
   rebuildExts(tf);
   filtered=exts.size>0?tf.filter(p=>{const e=getExt(p);return e&&exts.has(e);}):tf;
   render(filtered);
@@ -878,7 +893,7 @@ function toggleFN(){
   fnOnly=!fnOnly;
   const b=document.getElementById('fnbtn');
   b.textContent=fnOnly?'filename only':'full path';
-  b.classList.toggle('active',fnOnly);render(filtered);
+  b.classList.toggle('active',fnOnly);exts.clear();go();
 }
 function toggleUN(){
   uniqueNames=!uniqueNames;
@@ -979,6 +994,23 @@ function dl(){
       document.getElementById('status').innerHTML=d.ok?'<span class=ok>[+] saved: '+d.msg+'</span>':'<span class=err>[-] failed: '+d.msg+'</span>';
     });
 }
+function startDlPoll(){
+  if(dlPollTimer)return;
+  dlPollTimer=setInterval(()=>{
+    fetch('/dlstatus').then(r=>r.json()).then(d=>{
+      const s=document.getElementById('status');
+      if(d.running){
+        s.textContent='[*] downloading... '+d.done+'/'+d.total;
+      } else if(d.total>0){
+        clearInterval(dlPollTimer);dlPollTimer=null;
+        const msg=d.failed>0
+          ?'[+] download complete: '+d.done+' saved, '+d.failed+' failed'
+          :'[+] download complete: '+d.done+' file(s) saved';
+        s.innerHTML='<span class=ok>'+msg+'</span>';
+      }
+    });
+  },2000);
+}
 function downloadAll(){
   if(!displayed.length){document.getElementById('status').textContent='nothing to download';return;}
   const n=displayed.length;
@@ -989,10 +1021,7 @@ function downloadAll(){
     body:JSON.stringify({paths:displayed,proxy:proxy()===1})
   }).then(r=>r.json()).then(d=>{
     const s=document.getElementById('status');
-    if(d.ok){
-      const hosts=[...new Set(displayed.map(p=>{const m=p.match(/^\/\/([^/]+)/);return m?m[1]:null;}).filter(Boolean))];
-      s.innerHTML='<span class=ok>[+] downloading '+d.count+' file(s) \u2192 smblist/'+esc(hosts.join(', smblist/'))+'/</span>';
-    }
+    if(d.ok){startDlPoll();}
     else s.innerHTML='<span class=err>[-] '+esc(d.msg)+'</span>';
   });
 }
@@ -1015,6 +1044,7 @@ def start_gui(creds, pathsfile=''):
     dns_server = ['']   # mutable so handlers can update it
     jobs_lock = threading.Lock()
     job_counter = [0]
+    dl_status = [{'running': False, 'done': 0, 'failed': 0, 'total': 0}]
 
     if pathsfile and os.path.exists(pathsfile):
         with open(pathsfile) as f:
@@ -1183,14 +1213,22 @@ def start_gui(creds, pathsfile=''):
             elif p.path == '/download':
                 path = qs.get('path', [''])[0]
                 share, d, fname = parse_smb_path(path)
+                filepath = d.rstrip('/') + '/' + fname if fname else d
+                local_dir = os.path.join('smblist', 'downloads')
+                os.makedirs(local_dir, exist_ok=True)
+                safe_name = path.lstrip('/').replace('/', '_').replace(' ', '-')
+                local_path = os.path.join(local_dir, safe_name)
                 result = run_cmd(
-                    ['smbclient', share, '-U', creds, '-c', f'cd "{d}"; get "{fname}"'],
+                    ['smbclient', share, '-U', creds, '-c', f'get "{filepath}" {local_path}'],
                     use_proxy
                 )
-                if os.path.exists(fname):
-                    self.send_json({'ok': True, 'msg': fname})
+                if os.path.exists(local_path):
+                    self.send_json({'ok': True, 'msg': local_path})
                 else:
                     self.send_json({'ok': False, 'msg': result.stderr.strip()})
+
+            elif p.path == '/dlstatus':
+                self.send_json(dl_status[0])
 
             else:
                 self.send_response(404)
@@ -1209,20 +1247,39 @@ def start_gui(creds, pathsfile=''):
                     return
 
                 def do_dl_all():
-                    for path in paths:
+                    dl_status[0] = {'running': True, 'done': 0, 'failed': 0, 'total': len(paths)}
+                    lock = threading.Lock()
+
+                    local_dir = os.path.join('smblist', 'downloads')
+                    os.makedirs(local_dir, exist_ok=True)
+
+                    def download_one(path):
                         try:
                             share, d, fname = parse_smb_path(path)
                             if not fname:
-                                continue
+                                with lock: dl_status[0]['failed'] += 1
+                                return
                             filepath = d.rstrip('/') + '/' + fname
-                            host = path.split('/')[2] if len(path.split('/')) > 2 else 'unknown'
-                            local_dir = os.path.join('smblist', host)
-                            os.makedirs(local_dir, exist_ok=True)
-                            local_path = os.path.join(local_dir, fname)
-                            run_cmd(['smbclient', share, '-U', creds, '-c',
-                                     f'get "{filepath}" {local_path}'], use_proxy)
+                            safe_name = path.lstrip('/').replace('/', '_').replace(' ', '-')
+                            local_path = os.path.join(local_dir, safe_name)
+                            for attempt in range(3):
+                                run_cmd(['smbclient', share, '-U', creds, '-c',
+                                         f'get "{filepath}" {local_path}'], use_proxy)
+                                if os.path.exists(local_path):
+                                    break
+                                if attempt < 2:
+                                    time.sleep(2)
+                            with lock:
+                                if os.path.exists(local_path):
+                                    dl_status[0]['done'] += 1
+                                else:
+                                    dl_status[0]['failed'] += 1
                         except Exception:
-                            pass
+                            with lock: dl_status[0]['failed'] += 1
+
+                    with ThreadPoolExecutor(max_workers=30) as pool:
+                        pool.map(download_one, paths)
+                    dl_status[0]['running'] = False
 
                 threading.Thread(target=do_dl_all, daemon=True).start()
                 self.send_json({'ok': True, 'count': len(paths)})
