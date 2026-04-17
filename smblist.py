@@ -74,8 +74,32 @@ def parse_nxc(source, is_file=True):
     return results
 
 
-def smbclient_ls(share, creds, proxy=False):
-    result = run_cmd(['smbclient', share, '-U', creds, '-c', 'recurse;ls'], proxy)
+def resolve_host(host, dns_server):
+    """Resolve hostname to IP via a specific DNS server using dig."""
+    try:
+        result = subprocess.run(
+            ['dig', '+short', f'@{dns_server}', host],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            for line in reversed(result.stdout.strip().splitlines()):
+                line = line.strip()
+                if re.match(r'^\d+\.\d+\.\d+\.\d+$', line):
+                    return line
+    except Exception:
+        pass
+    return host
+
+
+def smbclient_ls(share, creds, proxy=False, dns_server=''):
+    share_cmd = share
+    if dns_server:
+        parts = share.split('/', 3)
+        if len(parts) >= 3:
+            ip = resolve_host(parts[2], dns_server)
+            if ip != parts[2]:
+                share_cmd = f'//{ip}/{parts[3]}' if len(parts) > 3 else f'//{ip}/'
+    result = run_cmd(['smbclient', share_cmd, '-U', creds, '-c', 'recurse;ls'], proxy)
     paths = []
     seen = set()
     current_path = ''
@@ -344,6 +368,11 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
     <button class=btn onclick=openHostModal() title="Scan a list of hosts">paste list</button>
   </div>
   <div class=t-sep></div>
+  <div class=t-grp>
+    <span class=t-lbl>DNS:</span>
+    <input type=text class=tbi id=dnsinput placeholder="DC IP" style="width:110px" oninput=updateDns()>
+  </div>
+  <div class=t-sep></div>
   <label class=cb-lbl><input type=checkbox id=useProxy checked> proxychains</label>
   <button class=btn id=fnbtn onclick=toggleFN()>full path</button>
   <button class=btn id=unbtn onclick=toggleUN()>unique names</button>
@@ -464,9 +493,11 @@ function loadManual(){
 }
 
 // ── host scanning ──
+function dnsVal(){return document.getElementById('dnsinput').value.trim();}
+function updateDns(){fetch('/setdns?dns='+encodeURIComponent(dnsVal()));}
 function addHost(){
   const h=document.getElementById('hostinput').value.trim();if(!h)return;
-  fetch('/addhost?host='+encodeURIComponent(h)+'&proxy='+proxy())
+  fetch('/addhost?host='+encodeURIComponent(h)+'&proxy='+proxy()+'&dns='+encodeURIComponent(dnsVal()))
     .then(r=>r.json()).then(d=>{
       if(d.ok){document.getElementById('hostinput').value='';startPolling();poll();}
       else if(d.skip)document.getElementById('status').innerHTML='<span class=err>[!] '+esc(d.msg)+'</span>';
@@ -496,7 +527,7 @@ function submitHostList(){
       if(parts.length)document.getElementById('status').textContent='[*] '+parts.join(', ');
       return;
     }
-    fetch('/addhost?host='+encodeURIComponent(hosts[i])+'&proxy='+proxy())
+    fetch('/addhost?host='+encodeURIComponent(hosts[i])+'&proxy='+proxy()+'&dns='+encodeURIComponent(dnsVal()))
       .then(r=>r.json()).then(d=>{
         if(d.ok){
           queued++;
@@ -520,16 +551,26 @@ function poll(){
     allJobs=jobdata;allPaths=newPaths;
     renderJobs(jobdata);renderTree();
     if(activeFilter){applyFilter();}
-    else if(newPaths.length!==all.length){all=newPaths;go();}
+    else{all=newPaths;go();}
     const anyActive=Object.values(jobdata).some(j=>j.status!=='done'&&j.status!=='error');
-    if(!anyActive&&Object.keys(jobdata).length>0)stopPolling();
+    if(!anyActive&&Object.keys(jobdata).length>0){stopPolling();all=allPaths;go();renderTree();}
   });
 }
 
 // ── jobs panel ──
+let _lastJobNotes={};
 function renderJobs(jobdata){
   const panel=document.getElementById('jobspanel');
   const active=Object.values(jobdata).filter(j=>j.status!=='done'&&j.status!=='error');
+  // surface notes from newly-finished jobs in the status bar
+  Object.values(jobdata).forEach(j=>{
+    if((j.status==='done'||j.status==='error')&&j.note&&!_lastJobNotes[j.host]){
+      _lastJobNotes[j.host]=j.note;
+      const cls=j.status==='error'?'err':'err';
+      document.getElementById('status').innerHTML=
+        `<span class=${cls}>[!] ${esc(j.host)}: ${esc(j.note)}</span>`;
+    }
+  });
   if(!active.length){panel.style.display='none';return;}
   panel.style.display='flex';
   panel.innerHTML='<span class=jlbl>scanning:</span>'+active.map(j=>{
@@ -831,7 +872,7 @@ function rebuildExts(paths){
     bar.appendChild(b);
   });
 }
-function scheduleFilter(){clearTimeout(ft);ft=setTimeout(go,150);}
+function scheduleFilter(){clearTimeout(ft);exts.clear();ft=setTimeout(go,150);}
 function scheduleHL(){clearTimeout(hlt);hlt=setTimeout(()=>{if(lastContent){document.getElementById('content').innerHTML=hl(lastContent);hitcount(lastContent);}},150);}
 function toggleFN(){
   fnOnly=!fnOnly;
@@ -948,7 +989,10 @@ function downloadAll(){
     body:JSON.stringify({paths:displayed,proxy:proxy()===1})
   }).then(r=>r.json()).then(d=>{
     const s=document.getElementById('status');
-    if(d.ok)s.innerHTML='<span class=ok>[+] downloading '+d.count+' file(s) \u2192 smblist/HOSTNAME/</span>';
+    if(d.ok){
+      const hosts=[...new Set(displayed.map(p=>{const m=p.match(/^\/\/([^/]+)/);return m?m[1]:null;}).filter(Boolean))];
+      s.innerHTML='<span class=ok>[+] downloading '+d.count+' file(s) \u2192 smblist/'+esc(hosts.join(', smblist/'))+'/</span>';
+    }
     else s.innerHTML='<span class=err>[-] '+esc(d.msg)+'</span>';
   });
 }
@@ -968,6 +1012,7 @@ def start_gui(creds, pathsfile=''):
     live_paths = []
     paths_lock = threading.Lock()
     jobs = {}
+    dns_server = ['']   # mutable so handlers can update it
     jobs_lock = threading.Lock()
     job_counter = [0]
 
@@ -990,21 +1035,30 @@ def start_gui(creds, pathsfile=''):
                 except Exception:
                     pass
 
-    def bg_run_host(job_id, host, use_proxy):
+    def bg_run_host(job_id, host, use_proxy, dns=''):
         def setstatus(s):
             with jobs_lock:
                 jobs[job_id]['status'] = s
         try:
             setstatus('running nxc')
-            result = run_cmd(
-                ['netexec', 'smb', host, '-u', user, '-p', passwd, '-d', domain, '--shares'],
-                use_proxy
-            )
+            nxc_cmd = ['netexec', 'smb', host, '-u', user, '-p', passwd, '-d', domain, '--shares']
+            if dns:
+                nxc_cmd += ['--dns-server', dns]
+            result = run_cmd(nxc_cmd, use_proxy)
             shares = parse_nxc(result.stdout, is_file=False)
             if not shares:
+                # extract a useful error note from nxc output
+                note = 'no readable shares'
+                combined = (result.stderr + result.stdout).lower()
+                if 'connection' in combined and ('refused' in combined or 'timed out' in combined or 'reset' in combined):
+                    note = 'connection failed'
+                elif 'name or service not known' in combined or 'resolve' in combined or 'dns' in combined:
+                    note = 'DNS resolution failed — set DNS server'
+                elif result.returncode != 0 and result.stderr.strip():
+                    note = result.stderr.strip().splitlines()[-1][:60]
                 with jobs_lock:
                     jobs[job_id]['status'] = 'done'
-                    jobs[job_id]['note'] = 'no readable shares'
+                    jobs[job_id]['note'] = note
                 return
 
             safe = re.sub(r'[/\\:]', '_', host)
@@ -1014,7 +1068,7 @@ def start_gui(creds, pathsfile=''):
             setstatus(f'enumerating {len(shares)} share(s)')
             with open(outfile, 'a') as fh:
                 for share in shares:
-                    new_paths = smbclient_ls(share, creds, use_proxy)
+                    new_paths = smbclient_ls(share, creds, use_proxy, dns_server=dns)
                     if new_paths:
                         with paths_lock:
                             live_paths.extend(new_paths)
@@ -1062,26 +1116,34 @@ def start_gui(creds, pathsfile=''):
                     snapshot = dict(jobs)
                 self.send_json(snapshot)
 
+            elif p.path == '/setdns':
+                dns_server[0] = qs.get('dns', [''])[0].strip()
+                self.send_json({'ok': True})
+
             elif p.path == '/addhost':
                 host = qs.get('host', [''])[0].strip()
+                dns = qs.get('dns', [''])[0].strip() or dns_server[0]
+                if dns:
+                    dns_server[0] = dns
                 if not host:
                     self.send_json({'ok': False, 'msg': 'no host provided'})
                     return
-                # skip if already scanned or currently running
+                # only block if a job is currently active (queued/running)
                 with jobs_lock:
-                    already = any(j['host'].lower() == host.lower() for j in jobs.values())
-                if not already:
-                    with paths_lock:
-                        already = any(p.lower().startswith(f'//{host.lower()}/') for p in live_paths)
-                if already:
-                    self.send_json({'ok': False, 'msg': f'{host} already scanned', 'skip': True})
+                    active_job = any(
+                        j['host'].lower() == host.lower() and
+                        j['status'] not in ('done', 'error')
+                        for j in jobs.values()
+                    )
+                if active_job:
+                    self.send_json({'ok': False, 'msg': f'{host} is already being scanned', 'skip': True})
                     return
                 with jobs_lock:
                     job_counter[0] += 1
                     job_id = str(job_counter[0])
                     jobs[job_id] = {'host': host, 'status': 'queued', 'found': 0, 'note': '', 'current': ''}
                 threading.Thread(
-                    target=bg_run_host, args=(job_id, host, use_proxy), daemon=True
+                    target=bg_run_host, args=(job_id, host, use_proxy, dns), daemon=True
                 ).start()
                 self.send_json({'ok': True, 'id': job_id})
 
@@ -1152,16 +1214,13 @@ def start_gui(creds, pathsfile=''):
                             share, d, fname = parse_smb_path(path)
                             if not fname:
                                 continue
-                            filepath = d + '/' + fname
-                            parts = path.split('/', 4)
-                            host = parts[2] if len(parts) > 2 else 'unknown'
-                            share_name = parts[3] if len(parts) > 3 else 'share'
-                            rel_dir = os.path.dirname(parts[4]) if len(parts) > 4 else ''
-                            local_dir = os.path.join('smblist', host, share_name, rel_dir)
+                            filepath = d.rstrip('/') + '/' + fname
+                            host = path.split('/')[2] if len(path.split('/')) > 2 else 'unknown'
+                            local_dir = os.path.join('smblist', host)
                             os.makedirs(local_dir, exist_ok=True)
                             local_path = os.path.join(local_dir, fname)
                             run_cmd(['smbclient', share, '-U', creds, '-c',
-                                     f'get "{filepath}" "{local_path}"'], use_proxy)
+                                     f'get "{filepath}" {local_path}'], use_proxy)
                         except Exception:
                             pass
 
