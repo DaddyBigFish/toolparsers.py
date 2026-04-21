@@ -14,7 +14,7 @@ Usage:
 creds format: domain/user%pass
 """
 
-import sys, os, re, subprocess, threading, webbrowser, json, time
+import sys, os, re, subprocess, threading, webbrowser, json, time, queue
 from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
@@ -92,7 +92,7 @@ def resolve_host(host, dns_server):
     return host
 
 
-def smbclient_ls(share, creds, proxy=False, dns_server=''):
+def smbclient_ls(share, creds, proxy=False, dns_server='', timeout=120):
     share_cmd = share
     if dns_server:
         parts = share.split('/', 3)
@@ -100,7 +100,7 @@ def smbclient_ls(share, creds, proxy=False, dns_server=''):
             ip = resolve_host(parts[2], dns_server)
             if ip != parts[2]:
                 share_cmd = f'//{ip}/{parts[3]}' if len(parts) > 3 else f'//{ip}/'
-    result = run_cmd(['smbclient', share_cmd, '-U', creds, '-c', 'recurse;ls'], proxy)
+    result = run_cmd(['smbclient', share_cmd, '-U', creds, '-c', 'recurse;ls'], proxy, timeout=timeout)
     paths = []
     seen = set()
     current_path = ''
@@ -213,7 +213,7 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 .cb-lbl input[type=checkbox]{accent-color:var(--ac);cursor:pointer;width:13px;height:13px}
 
 /* === jobs strip === */
-#jobspanel{padding:5px 14px;border-bottom:1px solid var(--bd-s);background:var(--bg0);flex-shrink:0;display:none;flex-wrap:wrap;gap:6px;align-items:center}
+#jobspanel{padding:6px 14px;border-bottom:1px solid var(--bd-s);background:var(--bg0);flex-shrink:0;display:none;flex-direction:column;gap:0}
 .jlbl{font-size:11px;color:var(--tx-d);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
 .job{font-size:11px;padding:2px 10px;border-radius:20px;border:1px solid var(--bd-s);background:var(--bg2);display:inline-flex;align-items:center;gap:6px}
 .jhost{color:var(--ac-tx);font-weight:600}
@@ -562,27 +562,60 @@ function poll(){
 }
 
 // ── jobs panel ──
-let _lastJobNotes={};
+let _seenCompleted=new Set();
+let _completedLog=[]; // [{host,found,note,status}] newest first
 function renderJobs(jobdata){
   const panel=document.getElementById('jobspanel');
-  const active=Object.values(jobdata).filter(j=>j.status!=='done'&&j.status!=='error');
-  // surface notes from newly-finished jobs in the status bar
+  // collect newly finished jobs
   Object.values(jobdata).forEach(j=>{
-    if((j.status==='done'||j.status==='error')&&j.note&&!_lastJobNotes[j.host]){
-      _lastJobNotes[j.host]=j.note;
-      const cls=j.status==='error'?'err':'err';
-      document.getElementById('status').innerHTML=
-        `<span class=${cls}>[!] ${esc(j.host)}: ${esc(j.note)}</span>`;
+    if((j.status==='done'||j.status==='error')&&!_seenCompleted.has(j.host)){
+      _seenCompleted.add(j.host);
+      _completedLog.unshift({host:j.host,found:j.found||0,note:j.note||'',status:j.status});
     }
   });
-  if(!active.length){panel.style.display='none';return;}
-  panel.style.display='flex';
-  panel.innerHTML='<span class=jlbl>scanning:</span>'+active.map(j=>{
-    const spin='<span class=spinner></span>';
-    const count=j.found>0?`<span class=jcount>${j.found} paths</span>`:'';
-    const cur=j.current?`<span class=jcur title="${esc(j.current)}">${esc(j.current.split('/').pop()||j.current)}</span>`:'';
-    return `<span class=job>${spin}<span class=jhost>${esc(j.host)}</span><span class="jstat active">${esc(j.status)}</span>${count}${cur}</span>`;
-  }).join('');
+  const active=Object.values(jobdata).filter(j=>j.status!=='done'&&j.status!=='error');
+  const scanning=active.filter(j=>j.status!=='queued');
+  const queued=active.filter(j=>j.status==='queued');
+  const hasContent=active.length>0||_completedLog.length>0;
+  if(!hasContent){panel.style.display='none';return;}
+  panel.style.display='flex';panel.innerHTML='';
+  // ── active scanning row ──
+  if(active.length>0){
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;flex-wrap:wrap;gap:5px;align-items:center;width:100%';
+    let html=`<span class=jlbl>scanning (${scanning.length}/15):</span>`;
+    html+=scanning.map(j=>{
+      const count=j.found>0?`<span class=jcount>${j.found}</span>`:'';
+      const cur=j.current?`<span class=jcur title="${esc(j.current)}">${esc(j.current.split('/').pop()||j.current)}</span>`:'';
+      return `<span class=job><span class=spinner></span><span class=jhost>${esc(j.host)}</span>${count}${cur}</span>`;
+    }).join('');
+    if(queued.length>0)html+=`<span style="font-size:11px;color:var(--tx-d);margin-left:2px">+${queued.length} queued</span>`;
+    row.innerHTML=html;panel.appendChild(row);
+  }
+  // ── completed log row ──
+  if(_completedLog.length>0){
+    const withShares=_completedLog.filter(c=>c.found>0);
+    const noShares=_completedLog.filter(c=>c.found===0&&c.status!=='error');
+    const errors=_completedLog.filter(c=>c.status==='error');
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;flex-wrap:wrap;gap:4px;align-items:center;width:100%;'+(active.length>0?'border-top:1px solid var(--bd-s);padding-top:5px;margin-top:3px':'');
+    let html=`<span class=jlbl>done (${_completedLog.length}):</span>`;
+    if(withShares.length>0)html+=`<span style="font-size:11px;font-weight:700;color:var(--green)">${withShares.length} found shares</span>`;
+    if(noShares.length>0)html+=`<span style="font-size:11px;color:var(--tx-d)">${noShares.length} empty</span>`;
+    if(errors.length>0)html+=`<span style="font-size:11px;font-weight:700;color:var(--red)">${errors.length} errors</span>`;
+    const chips=[...withShares,...errors.slice(0,6)].slice(0,15);
+    if(chips.length>0){
+      html+='<span style="color:var(--bd);margin:0 2px">|</span>';
+      html+=chips.map(c=>{
+        const ok=c.found>0;
+        const col=ok?'var(--green)':'var(--red)';
+        const bg=ok?'rgba(63,185,80,.12)':'rgba(248,81,73,.12)';
+        const lbl=ok?`${c.found} paths`:(c.note||'error');
+        return `<span class=job style="border-color:${col};background:${bg}"><span style="color:${col};font-weight:700;font-size:11px">${esc(c.host)}</span><span style="color:${col};font-size:10px">${esc(lbl)}</span></span>`;
+      }).join('');
+    }
+    row.innerHTML=html;panel.appendChild(row);
+  }
 }
 
 // ── tree rendering ──
@@ -885,7 +918,7 @@ function rebuildExts(paths){
     const b=document.createElement('span');
     b.className='eb'+(exts.has(ext)?' on':'');
     b.textContent='.'+ext;b.title=cnt+' files';
-    b.onclick=()=>{if(exts.has(ext))exts.delete(ext);else exts.add(ext);b.classList.toggle('on',exts.has(ext));go();};
+    b.onclick=e=>{if(e.ctrlKey||e.metaKey||e.shiftKey){if(exts.has(ext))exts.delete(ext);else exts.add(ext);}else{const only=exts.size===1&&exts.has(ext);exts.clear();if(!only)exts.add(ext);}go();};
     frag.appendChild(b);
   });
   bar.innerHTML='';bar.appendChild(frag);
@@ -1048,6 +1081,8 @@ def start_gui(creds, pathsfile=''):
     jobs_lock = threading.Lock()
     job_counter = [0]
     dl_status = [{'running': False, 'done': 0, 'failed': 0, 'total': 0}]
+    SCAN_WORKERS = 15
+    scan_queue = queue.Queue()
 
     if pathsfile and os.path.exists(pathsfile):
         with open(pathsfile) as f:
@@ -1077,10 +1112,14 @@ def start_gui(creds, pathsfile=''):
             nxc_cmd = ['netexec', 'smb', host, '-u', user, '-p', passwd, '-d', domain, '--shares']
             if dns:
                 nxc_cmd += ['--dns-server', dns]
-            result = run_cmd(nxc_cmd, use_proxy)
+            result = run_cmd(nxc_cmd, use_proxy, timeout=60)
+            if result.stderr.strip() == 'timed out':
+                with jobs_lock:
+                    jobs[job_id]['status'] = 'error'
+                    jobs[job_id]['note'] = 'timed out'
+                return
             shares = parse_nxc(result.stdout, is_file=False)
             if not shares:
-                # extract a useful error note from nxc output
                 note = 'no readable shares'
                 combined = (result.stderr + result.stdout).lower()
                 if 'connection' in combined and ('refused' in combined or 'timed out' in combined or 'reset' in combined):
@@ -1116,6 +1155,17 @@ def start_gui(creds, pathsfile=''):
             with jobs_lock:
                 jobs[job_id]['status'] = 'error'
                 jobs[job_id]['note'] = str(e)
+
+    def scan_worker():
+        while True:
+            job_id, host, use_proxy, dns = scan_queue.get()
+            try:
+                bg_run_host(job_id, host, use_proxy, dns)
+            finally:
+                scan_queue.task_done()
+
+    for _ in range(SCAN_WORKERS):
+        threading.Thread(target=scan_worker, daemon=True).start()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -1175,9 +1225,7 @@ def start_gui(creds, pathsfile=''):
                     job_counter[0] += 1
                     job_id = str(job_counter[0])
                     jobs[job_id] = {'host': host, 'status': 'queued', 'found': 0, 'note': '', 'current': ''}
-                threading.Thread(
-                    target=bg_run_host, args=(job_id, host, use_proxy, dns), daemon=True
-                ).start()
+                scan_queue.put((job_id, host, use_proxy, dns))
                 self.send_json({'ok': True, 'id': job_id})
 
             elif p.path == '/loadfile':
