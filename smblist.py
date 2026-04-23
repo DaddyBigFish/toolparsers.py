@@ -8,7 +8,7 @@ Usage:
   smblist.py -nxc <nxc_output>                 - just parse nxc into share list
   smblist.py <creds> -host <host|hosts.txt>    - run nxc then enumerate
   smblist.py <creds> -get <//host/share/file>  - download a specific file
-  smblist.py <creds> -gui [paths.txt]          - launch web gui
+  smblist.py <creds> -gui                      - launch web gui (auto-loads smblist_* files)
   smblist.py <creds> [shares.txt] -o out.txt   - output to file and terminal
 
 creds format: domain/user%pass
@@ -201,14 +201,12 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 .tbi{background:var(--bg1);border:1px solid var(--bd);color:var(--tx);padding:5px 9px;font-family:var(--ui);font-size:12px;border-radius:6px;outline:none;transition:border-color .15s,box-shadow .15s}
 .tbi:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-m)}
 .tbi::placeholder{color:var(--tx-d)}
-#manualpath{width:180px}
 #hostinput{width:150px}
 .btn{background:var(--bg3);border:1px solid var(--bd);color:var(--tx-m);padding:5px 12px;cursor:pointer;font-family:var(--ui);font-size:12px;border-radius:6px;transition:all .15s;white-space:nowrap;flex-shrink:0;font-weight:500}
 .btn:hover{background:var(--bg4);border-color:var(--tx-d);color:var(--tx)}
 .btn.active{background:var(--ac-bg);border-color:var(--ac);color:var(--ac-tx)}
 .btn-accent{background:var(--ac-bg);border-color:var(--ac);color:var(--ac-tx)}
 .btn-accent:hover{background:var(--ac);color:#fff}
-.btn-file{cursor:pointer}
 .cb-lbl{font-size:12px;color:var(--tx-m);display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;flex-shrink:0;font-weight:500}
 .cb-lbl input[type=checkbox]{accent-color:var(--ac);cursor:pointer;width:13px;height:13px}
 
@@ -242,11 +240,12 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 .tallcount{font-size:11px;color:var(--tx-d);margin-left:auto;font-weight:400;font-family:var(--mono)}
 .tall.sel .tallcount{color:var(--ac-tx);opacity:.7}
 .tgroup{margin:2px 0}
-.tghead{padding:5px 8px 5px 12px;display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;color:var(--tx-s);user-select:none;border-radius:6px;margin:1px 6px;transition:background .1s;font-weight:500}
+.tghead{padding:5px 8px 5px 4px;display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;color:var(--tx-s);user-select:none;border-radius:6px;margin:1px 6px;transition:background .1s;font-weight:500}
 .tghead:hover{background:var(--bg3);color:var(--tx-m)}
 .tghead.sel .tgname{color:var(--ac-tx)}
 .tghead.dragover{background:rgba(47,129,247,.08);outline:1px dashed rgba(47,129,247,.4);outline-offset:-1px}
-.tgcaret{font-size:9px;color:var(--tx-d);width:12px;flex-shrink:0;display:inline-block;transition:transform .15s}
+.tgcaret{font-size:9px;color:var(--tx-d);flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;background:none;border:none;cursor:pointer;border-radius:4px;transition:transform .15s,background .1s;margin:-2px 0}
+.tgcaret:hover{background:rgba(255,255,255,.07)}
 .tgcaret.open{transform:rotate(90deg)}
 .tgname{flex:1;overflow:hidden;text-overflow:ellipsis;color:var(--tx-m);font-size:12px}
 .tgcount{font-size:10px;color:var(--tx-d);flex-shrink:0;background:var(--bg3);border-radius:10px;padding:1px 6px;border:1px solid var(--bd-s);font-family:var(--mono)}
@@ -286,10 +285,29 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 #filterpath{background:var(--bg1);border:1px solid var(--bd);color:var(--tx);padding:5px 9px;font-family:var(--ui);font-size:12px;border-radius:6px;outline:none;width:100%;transition:border-color .15s,box-shadow .15s}
 #filterpath:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-m)}
 #filterpath::placeholder{color:var(--tx-d)}
-#extbar{display:flex;flex-wrap:wrap;gap:3px;min-height:4px}
-.eb{font-size:10px;padding:2px 8px;border-radius:4px;cursor:pointer;background:var(--bg3);border:1px solid var(--bd-s);color:var(--tx-d);font-weight:600;transition:all .12s;font-family:var(--mono)}
-.eb:hover{background:var(--bg4);color:var(--tx-m);border-color:var(--bd)}
-.eb.on{background:var(--ac-bg);border-color:var(--ac);color:var(--ac-tx)}
+#extdrop-wrap{position:relative}
+#extbtn{width:100%;background:var(--bg3);border:1px solid var(--bd);color:var(--tx-m);padding:4px 9px;cursor:pointer;font-family:var(--ui);font-size:11px;border-radius:6px;text-align:left;display:flex;justify-content:space-between;align-items:center;transition:all .15s;line-height:1.4}
+#extbtn:hover{border-color:var(--tx-d);color:var(--tx)}
+#extbtn.active{border-color:var(--ac);color:var(--ac-tx);background:var(--ac-bg)}
+#extdrop{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--bg2);border:1px solid var(--bd);border-radius:8px;z-index:500;box-shadow:0 8px 24px rgba(0,0,0,.5);display:none;flex-direction:column;min-width:220px}
+#extdrop.open{display:flex}
+#extsearch{background:var(--bg1);border:none;border-bottom:1px solid var(--bd-s);color:var(--tx);padding:7px 10px;font-family:var(--ui);font-size:11px;outline:none;width:100%;border-radius:8px 8px 0 0;transition:background .15s}
+#extsearch:focus{background:var(--bg0)}
+#extsearch::placeholder{color:var(--tx-d)}
+#extlist{max-height:240px;overflow-y:auto;padding:3px 0}
+.ext-row{display:flex;align-items:center;padding:3px 8px;gap:5px;transition:background .08s}
+.ext-row:hover{background:var(--bg3)}
+.ext-name{font-family:var(--mono);font-size:11px;color:var(--tx-s);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ext-cnt{font-size:10px;color:var(--tx-d);min-width:28px;text-align:right;font-family:var(--mono);flex-shrink:0}
+.ext-inc,.ext-exc{width:20px;height:20px;border-radius:4px;border:1px solid var(--bd-s);background:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--tx-d);transition:all .1s;flex-shrink:0;font-family:var(--ui);padding:0}
+.ext-inc:hover{border-color:var(--green);color:var(--green);background:var(--green-bg)}
+.ext-exc:hover{border-color:var(--red);color:var(--red);background:var(--red-bg)}
+.ext-inc.on{background:var(--green-bg);border-color:var(--green);color:var(--green)}
+.ext-exc.on{background:var(--red-bg);border-color:var(--red);color:var(--red)}
+#extfoot{border-top:1px solid var(--bd-s);padding:5px 8px;display:flex;justify-content:space-between;align-items:center;gap:6px}
+#extfoot-lbl{font-size:10px;color:var(--tx-d);flex:1}
+#extfoot-clear{background:none;border:1px solid var(--bd-s);color:var(--tx-d);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--ui);transition:all .12s;white-space:nowrap}
+#extfoot-clear:hover{border-color:var(--tx-d);color:var(--tx)}
 #pathList{flex:1;overflow-y:auto;position:relative;background:var(--bg1)}
 .path{padding:3px 14px;cursor:pointer;font-size:11px;color:var(--tx-s);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:absolute;left:0;right:0;font-family:var(--mono);letter-spacing:-.02em;transition:color .08s}
 .path:hover{background:var(--bg2);color:var(--tx)}
@@ -336,13 +354,24 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 .modal-foot{display:flex;gap:8px;justify-content:flex-end}
 </style></head>
 <body>
+<div id=dlmodal style="display:none" class=modal-overlay onclick="if(event.target===this)closeDlModal()">
+  <div class=modal>
+    <div class=modal-title>Download All Files</div>
+    <div class=modal-sub id=dlmodal-sub>Select a destination folder</div>
+    <div class=modal-foot>
+      <button class=btn onclick=closeDlModal()>Cancel</button>
+      <button class=btn onclick=startDlAll(false)>Download Folder</button>
+      <button class="btn btn-accent" onclick=startDlAll(true)>Extension Folder</button>
+    </div>
+  </div>
+</div>
 <div id=hostmodal style="display:none" class=modal-overlay onclick="if(event.target===this)closeHostModal()">
   <div class=modal>
-    <div class=modal-title>Scan multiple hosts</div>
-    <div class=modal-sub>One host / FQDN / CIDR per line</div>
+    <div class=modal-title>Scan Multiple Hosts</div>
+    <div class=modal-sub>One Host / FQDN / CIDR per Line</div>
     <textarea id=hostlist placeholder="host1.domain.com&#10;host2.domain.com&#10;192.168.1.0/24"></textarea>
     <div class=modal-foot>
-      <button class=btn onclick=closeHostModal()>cancel</button>
+      <button class=btn onclick=closeHostModal()>Cancel</button>
       <button class="btn btn-accent" onclick=submitHostList()>Get Shares</button>
     </div>
   </div>
@@ -354,18 +383,10 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
   </div>
   <div class=t-sep></div>
   <div class=t-grp>
-    <span class=t-lbl>From File:</span>
-    <label class="btn btn-file">browse<input type=file id=fileInput accept=.txt onchange=loadFile(this) style="display:none"></label>
-    <span class=t-lbl>Path:</span>
-    <input type=text class=tbi id=manualpath placeholder="or enter file path">
-    <button class=btn onclick=loadManual()>Get Path</button>
-  </div>
-  <div class=t-sep></div>
-  <div class=t-grp>
     <span class=t-lbl>Domain:</span>
     <input type=text class=tbi id=hostinput placeholder="FQDN" onkeydown="if(event.key==='Enter')addHost()">
     <button class="btn btn-accent" onclick=addHost()>Get Shares</button>
-    <button class=btn onclick=openHostModal() title="Scan a list of hosts">paste list</button>
+    <button class=btn onclick=openHostModal() title="Scan a list of hosts">Paste List</button>
   </div>
   <div class=t-sep></div>
   <div class=t-grp>
@@ -373,23 +394,23 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
     <input type=text class=tbi id=dnsinput placeholder="DC IP / FQDN" style="width:130px" oninput=updateDns()>
   </div>
   <div class=t-sep></div>
-  <label class=cb-lbl><input type=checkbox id=useProxy checked> proxychains</label>
-  <button class=btn id=fnbtn onclick=toggleFN()>full path</button>
-  <button class=btn id=unbtn onclick=toggleUN()>unique names</button>
-  <button class=btn onclick=clearRight()>clear</button>
+  <label class=cb-lbl><input type=checkbox id=useProxy checked> Proxychains</label>
+  <button class="btn active" id=fnbtn onclick=toggleFN()>Filename Only</button>
+  <button class=btn id=unbtn onclick=toggleUN()>Unique Names</button>
+  <button class=btn onclick=clearRight()>Clear</button>
 </div>
 <div id=jobspanel></div>
 <div id=main>
   <div id=hosttree>
     <div id=treeheader>
-      <span>hosts</span>
-      <button onclick=addGroup()>+ group</button>
+      <span>Hosts</span>
+      <button onclick=addGroup()>+ Group</button>
     </div>
     <div id=treesel>
       <span id=treeselcount></span>
       <select id=treeseldest></select>
-      <button class=btn style="padding:3px 10px;font-size:11px" onclick=addSelectedToGroup()>add to group</button>
-      <button class=btn style="padding:3px 8px;font-size:11px" onclick=clearSel()>✕ clear</button>
+      <button class=btn style="padding:3px 10px;font-size:11px" onclick=addSelectedToGroup()>Add to Group</button>
+      <button class=btn style="padding:3px 8px;font-size:11px" onclick=clearSel()>✕ Clear</button>
     </div>
     <div id=treebody></div>
   </div>
@@ -397,34 +418,42 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
   <div id=left>
     <div id=leftbar>
       <div>
-        <div class=lbl>filter paths</div>
+        <div class=lbl>Filter Paths</div>
         <input type=text id=filterpath placeholder="keyword, keyword  (comma = OR)" oninput=scheduleFilter()>
       </div>
       <div>
-        <div class=lbl>file types</div>
-        <div id=extbar></div>
+        <div class=lbl>File Types</div>
+        <div id=extdrop-wrap>
+          <button id=extbtn onclick="toggleExtDrop(event)"><span id=extbtn-lbl>All Types</span><span style="font-size:9px;opacity:.5;margin-left:4px">&#9660;</span></button>
+          <div id=extdrop>
+            <input type=text id=extsearch placeholder="Search extensions..." oninput=paintExtChips()>
+            <div id=extlist></div>
+            <div id=extfoot><span id=extfoot-lbl></span><button id=extfoot-clear onclick=clearExtFilters()>Clear</button></div>
+          </div>
+        </div>
       </div>
     </div>
     <div id=pathList></div>
-    <div id=leftfoot><button class=dl-btn style="width:100%;font-size:11px;padding:5px" onclick=downloadAll()>download all</button></div>
+    <div id=leftfoot><button class=dl-btn style="width:100%;font-size:11px;padding:5px" onclick=downloadAll()>Download All</button></div>
   </div>
   <div id=divider></div>
   <div id=right>
     <div id=rightbar>
-      <span>search content</span>
+      <span>Search Content</span>
       <input type=text id=filtercontent placeholder="keyword, keyword  (comma = OR)" oninput=scheduleHL()>
     </div>
-    <div id=header>select a file to preview</div>
-    <div id=contentarea><pre id=content style="color:var(--tx-d)">select a path from the list to view its contents</pre></div>
-    <div id=bottom><button class=dl-btn onclick=dl()>download file</button></div>
+    <div id=header>Select a File to Preview</div>
+    <div id=contentarea><pre id=content style="color:var(--tx-d)">Select a Path from the List to View its Contents</pre></div>
+    <div id=bottom><button class=dl-btn onclick=dl()>Download File</button></div>
   </div>
 </div>
 <div id=status>0 paths</div>
 <script>
 const ROW_H=20;
-let all=[],cur=null,ft=null,hlt=null,lastContent='',filtered=[],displayed=[],exts=new Set(),fnOnly=false,uniqueNames=false;
+let all=[],cur=null,ft=null,hlt=null,lastContent='',filtered=[],displayed=[],exts=new Set(),negExts=new Set(),fnOnly=true,uniqueNames=false;
 let pollTimer=null,dlPollTimer=null;
 let activeCtrl=null,activeTid=null;
+let _extCounts={};
 const previewCache=new Map();
 const CACHE_MAX=30;
 function cachePut(path,data){if(previewCache.size>=CACHE_MAX)previewCache.delete(previewCache.keys().next().value);previewCache.set(path,data);}
@@ -468,33 +497,15 @@ function ungroupedHosts(hosts){
 // ── init ──
 loadGroups();
 function loadPaths(){
-  document.getElementById('status').innerHTML='<span class=spinner></span> loading...';
-  document.getElementById('treebody').innerHTML='<div style="padding:16px 14px;font-size:11px;color:var(--tx-d);display:flex;align-items:center;gap:8px"><span class=spinner></span>loading hosts...</div>';
-  fetch('/paths').then(r=>r.json()).then(d=>{allPaths=d;all=d;exts.clear();go();renderTree();});
+  document.getElementById('status').innerHTML='<span class=spinner></span> Loading...';
+  document.getElementById('treebody').innerHTML='<div style="padding:16px 14px;font-size:11px;color:var(--tx-d);display:flex;align-items:center;gap:8px"><span class=spinner></span>Loading Hosts...</div>';
+  fetch('/paths').then(r=>r.json()).then(d=>{allPaths=d;all=d;exts.clear();negExts.clear();try{go();}catch(e){console.error('go:',e);}renderTree();});
 }
 loadPaths();
 fetch('/jobs').then(r=>r.json()).then(d=>{
   allJobs=d;renderJobs(d);
   if(Object.values(d).some(j=>j.status!=='done'&&j.status!=='error'))startPolling();
 });
-
-// ── file loading ──
-function loadFile(inp){
-  const f=inp.files[0];if(!f)return;
-  const r=new FileReader();
-  r.onload=ev=>{
-    allPaths=ev.target.result.split('\\n').map(l=>l.trim()).filter(Boolean);
-    activeFilter=null;all=allPaths;exts.clear();go();renderTree();
-  };
-  r.readAsText(f);
-}
-function loadManual(){
-  const p=document.getElementById('manualpath').value.trim();if(!p)return;
-  fetch('/loadfile?path='+encodeURIComponent(p)).then(r=>r.json()).then(d=>{
-    if(d.ok){allPaths=d.paths;activeFilter=null;all=allPaths;exts.clear();go();renderTree();}
-    else document.getElementById('status').innerHTML='<span class=err>[-] '+d.msg+'</span>';
-  });
-}
 
 // ── host scanning ──
 function dnsVal(){return document.getElementById('dnsinput').value.trim();}
@@ -521,13 +532,13 @@ function submitHostList(){
     .split(/[\\n,]+/).map(h=>h.trim()).filter(Boolean);
   if(!hosts.length)return;
   closeHostModal();
-  document.getElementById('status').textContent='[*] queuing '+hosts.length+' host(s)...';
+  document.getElementById('status').textContent='[*] Queuing '+hosts.length+' host(s)...';
   let queued=0,skipped=0,pollingStarted=false;
   function next(i){
     if(i>=hosts.length){
       const parts=[];
-      if(queued>0)parts.push(queued+' queued');
-      if(skipped>0)parts.push(skipped+' already scanned');
+      if(queued>0)parts.push(queued+' Queued');
+      if(skipped>0)parts.push(skipped+' Already Scanned');
       if(parts.length)document.getElementById('status').textContent='[*] '+parts.join(', ');
       return;
     }
@@ -542,20 +553,26 @@ function submitHostList(){
   }
   next(0);
 }
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeHostModal();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeHostModal();closeDlModal();}});
 
 // ── polling ──
 function startPolling(){if(pollTimer)return;pollTimer=setInterval(poll,2000);}
 function stopPolling(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
+let _lastPathSig='',_lastTreeSig='';
 function poll(){
   Promise.all([
     fetch('/paths').then(r=>r.json()),
     fetch('/jobs').then(r=>r.json())
   ]).then(([newPaths,jobdata])=>{
     allJobs=jobdata;allPaths=newPaths;
-    renderJobs(jobdata);renderTree();
-    if(activeFilter){applyFilter();}
-    else{all=newPaths;go();}
+    renderJobs(jobdata);
+    const treeSig=newPaths.length+'|'+(newPaths[newPaths.length-1]||'');
+    if(treeSig!==_lastTreeSig){_lastTreeSig=treeSig;renderTree();}
+    const pathSig=newPaths.length+'|'+(newPaths[newPaths.length-1]||'');
+    if(pathSig!==_lastPathSig){
+      _lastPathSig=pathSig;
+      if(activeFilter){applyFilter();}else{all=newPaths;go();}
+    }
     const anyActive=Object.values(jobdata).some(j=>j.status!=='done'&&j.status!=='error');
     if(!anyActive&&Object.keys(jobdata).length>0){stopPolling();all=allPaths;go();renderTree();}
   });
@@ -579,8 +596,26 @@ function renderJobs(jobdata){
   const hasContent=active.length>0||_completedLog.length>0;
   if(!hasContent){panel.style.display='none';return;}
   panel.style.display='flex';panel.innerHTML='';
-  // ── active scanning row ──
+  // ── progress summary + active scanning row ──
   if(active.length>0){
+    const total=scanning.length+queued.length+_completedLog.length;
+    const done=_completedLog.length;
+    const remaining=scanning.length+queued.length;
+    const pct=total>0?Math.round(done/total*100):0;
+    // progress bar row
+    const prog=document.createElement('div');
+    prog.style.cssText='display:flex;align-items:center;gap:8px;width:100%;margin-bottom:4px';
+    const barWrap=document.createElement('div');
+    barWrap.style.cssText='flex:1;height:4px;background:var(--bg4);border-radius:2px;overflow:hidden;max-width:200px';
+    const barFill=document.createElement('div');
+    barFill.style.cssText=`height:100%;border-radius:2px;background:var(--ac);width:${pct}%;transition:width .4s`;
+    barWrap.appendChild(barFill);
+    prog.innerHTML=`<span class=jlbl>hosts</span><span style="font-size:12px;font-weight:700;color:var(--tx)">${done}<span style="color:var(--tx-d);font-weight:400"> / ${total}</span></span>`;
+    prog.appendChild(barWrap);
+    prog.innerHTML+=`<span style="font-size:11px;color:var(--yellow);font-weight:600">${remaining} remaining</span>`;
+    if(queued.length>0)prog.innerHTML+=`<span style="font-size:11px;color:var(--tx-d)">(${queued.length} queued)</span>`;
+    panel.appendChild(prog);
+    // scanning chips row
     const row=document.createElement('div');
     row.style.cssText='display:flex;flex-wrap:wrap;gap:5px;align-items:center;width:100%';
     let html=`<span class=jlbl>scanning (${scanning.length}/15):</span>`;
@@ -589,7 +624,6 @@ function renderJobs(jobdata){
       const cur=j.current?`<span class=jcur title="${esc(j.current)}">${esc(j.current.split('/').pop()||j.current)}</span>`:'';
       return `<span class=job><span class=spinner></span><span class=jhost>${esc(j.host)}</span>${count}${cur}</span>`;
     }).join('');
-    if(queued.length>0)html+=`<span style="font-size:11px;color:var(--tx-d);margin-left:2px">+${queued.length} queued</span>`;
     row.innerHTML=html;panel.appendChild(row);
   }
   // ── completed log row ──
@@ -658,9 +692,17 @@ function makeGroupEl(group){
   head.addEventListener('dragleave',()=>head.classList.remove('dragover'));
   head.addEventListener('drop',e=>{e.preventDefault();head.classList.remove('dragover');dropOnGroup(group.id);});
 
-  const caret=document.createElement('span');
+  const caret=document.createElement('button');
   caret.className='tgcaret'+(group.collapsed?'':' open');
   caret.textContent='▶';
+  caret.title='Collapse / expand';
+  caret.onclick=e=>{
+    e.stopPropagation();
+    group.collapsed=!group.collapsed;
+    caret.className='tgcaret'+(group.collapsed?'':' open');
+    bodyEl.style.display=group.collapsed?'none':'block';
+    saveGroups();
+  };
 
   const nm=document.createElement('span');
   nm.className='tgname';nm.textContent=group.name;
@@ -680,11 +722,8 @@ function makeGroupEl(group){
 
   head.onclick=e=>{
     if(e.target===dots||e.target.classList.contains('tgdots'))return;
-    group.collapsed=!group.collapsed;
-    caret.className='tgcaret'+(group.collapsed?'':' open');
-    bodyEl.style.display=group.collapsed?'none':'block';
-    saveGroups();
-    if(!group.collapsed)setFilter({type:'group',groupId:group.id});
+    if(e.target===caret||e.target.closest('.tgcaret'))return;
+    setFilter({type:'group',groupId:group.id});
   };
 
   group.hostnames.forEach(h=>{
@@ -702,7 +741,7 @@ function makeUngroupedEl(hosts){
   // label row — also a drop target for moving hosts back to ungrouped
   const lbl=document.createElement('div');
   lbl.className='tuglbl';
-  lbl.innerHTML='<span>ungrouped</span><span style="color:#1e3e1e">'+hosts.length+'</span>';
+  lbl.innerHTML='<span>Ungrouped</span><span style="color:#1e3e1e">'+hosts.length+'</span>';
   lbl.addEventListener('dragover',e=>{e.preventDefault();wrap.classList.add('dragover');});
   lbl.addEventListener('dragleave',()=>wrap.classList.remove('dragover'));
   lbl.addEventListener('drop',e=>{e.preventDefault();wrap.classList.remove('dragover');dropOnGroup(null);});
@@ -816,7 +855,7 @@ function dropOnGroup(targetGroupId){
 
 // ── filter ──
 function setFilter(f){
-  activeFilter=f;exts.clear();renderTree();applyFilter();
+  activeFilter=f;exts.clear();negExts.clear();renderTree();requestAnimationFrame(applyFilter);
 }
 
 function applyFilter(){
@@ -875,9 +914,9 @@ function showGroupMenu(e,groupId){
   closeMenu();
   const menu=document.createElement('div');
   menu.className='cmenu';menu.id='_cm';
-  menu.appendChild(mkItem('rename','',()=>renameGroup(groupId)));
+  menu.appendChild(mkItem('Rename','',()=>renameGroup(groupId)));
   menu.appendChild(mkSep());
-  menu.appendChild(mkItem('delete group','danger',()=>deleteGroup(groupId)));
+  menu.appendChild(mkItem('Delete Group','danger',()=>deleteGroup(groupId)));
   e.stopPropagation();posMenu(menu,e);
 }
 
@@ -904,37 +943,119 @@ function go(){
   let tf=all;
   if(val){const terms=val.toLowerCase().split(',').map(t=>t.trim()).filter(Boolean);tf=all.filter(p=>{const target=fnOnly?(p.split('/').pop()||p).toLowerCase():p.toLowerCase();return terms.some(t=>target.includes(t));});}
   rebuildExts(tf);
-  let base=exts.size>0?tf.filter(p=>{const e=getExt(p);return e&&exts.has(e);}):tf;
-  if(fnOnly){const keyed=base.map(p=>[(p.split('/').pop()||p).toLowerCase(),p]);keyed.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);filtered=keyed.map(k=>k[1]);}else{filtered=base;}
-  render(filtered);
+  let out;
+  if(fnOnly){
+    const keyed=tf.map(p=>[(p.split('/').pop()||p).toLowerCase(),p]);
+    keyed.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
+    out=exts.size>0?keyed.filter(([,p])=>{const e=getExt(p);return e&&exts.has(e);}):keyed;
+    if(negExts.size>0)out=out.filter(([,p])=>{const e=getExt(p);return !e||!negExts.has(e);});
+    out=out.map(k=>k[1]);
+  }else{
+    out=exts.size>0?tf.filter(p=>{const e=getExt(p);return e&&exts.has(e);}):tf;
+    if(negExts.size>0)out=out.filter(p=>{const e=getExt(p);return !e||!negExts.has(e);});
+  }
+  filtered=out;
+  render(out);
+}
+function toggleExtDrop(e){
+  if(e)e.stopPropagation();
+  const d=document.getElementById('extdrop');
+  const willOpen=!d.classList.contains('open');
+  d.classList.toggle('open',willOpen);
+  if(willOpen)document.getElementById('extsearch').focus();
+}
+document.addEventListener('click',function(e){
+  const w=document.getElementById('extdrop-wrap');
+  if(w&&!w.contains(e.target))document.getElementById('extdrop').classList.remove('open');
+});
+function updateExtBtn(){
+  const inc=exts.size,exc=negExts.size;
+  const btn=document.getElementById('extbtn');
+  const lbl=document.getElementById('extbtn-lbl');
+  const fl=document.getElementById('extfoot-lbl');
+  if(!inc&&!exc){
+    lbl.textContent='All Types';btn.classList.remove('active');
+    if(fl)fl.textContent='';
+  } else {
+    const parts=[];
+    if(inc)parts.push(inc+' included');
+    if(exc)parts.push(exc+' excluded');
+    lbl.textContent=parts.join(', ');btn.classList.add('active');
+    if(fl)fl.textContent=(inc+exc)+' active';
+  }
+}
+function syncExtChips(){
+  document.querySelectorAll('.ext-row').forEach(row=>{
+    const ext=row.dataset.ext;
+    const incBtn=row.querySelector('.ext-inc');
+    const excBtn=row.querySelector('.ext-exc');
+    if(incBtn)incBtn.classList.toggle('on',exts.has(ext));
+    if(excBtn)excBtn.classList.toggle('on',negExts.has(ext));
+  });
+  updateExtBtn();
 }
 function rebuildExts(paths){
   const counts={};
   paths.forEach(p=>{const e=getExt(p);if(e)counts[e]=(counts[e]||0)+1;});
-  const sorted=Object.entries(counts).sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
-  const bar=document.getElementById('extbar');
-  const frag=document.createDocumentFragment();
-  sorted.forEach(([ext,cnt])=>{
-    const b=document.createElement('span');
-    b.className='eb'+(exts.has(ext)?' on':'');
-    b.textContent='.'+ext;b.title=cnt+' files';
-    b.onclick=e=>{if(e.ctrlKey||e.metaKey||e.shiftKey){if(exts.has(ext))exts.delete(ext);else exts.add(ext);}else{const only=exts.size===1&&exts.has(ext);exts.clear();if(!only)exts.add(ext);}go();};
-    frag.appendChild(b);
-  });
-  bar.innerHTML='';bar.appendChild(frag);
+  _extCounts=counts;
+  paintExtChips();
 }
-function scheduleFilter(){clearTimeout(ft);exts.clear();ft=setTimeout(go,150);}
+function paintExtChips(){
+  const inp=document.getElementById('extsearch');
+  const search=inp?inp.value.toLowerCase().trim():'';
+  let entries=Object.entries(_extCounts).sort((a,b)=>b[1]-a[1]);
+  if(search)entries=entries.filter(([ext])=>ext.includes(search));
+  const list=document.getElementById('extlist');
+  const frag=document.createDocumentFragment();
+  entries.slice(0,300).forEach(([ext,cnt])=>{
+    const row=document.createElement('div');
+    row.className='ext-row';row.dataset.ext=ext;
+    const nm=document.createElement('span');nm.className='ext-name';nm.textContent='.'+ext;
+    const ct=document.createElement('span');ct.className='ext-cnt';ct.textContent=cnt;
+    const inc=document.createElement('button');
+    inc.className='ext-inc'+(exts.has(ext)?' on':'');
+    inc.textContent='+';inc.title='Include — show only this type';
+    inc.onclick=ev=>{
+      ev.stopPropagation();
+      negExts.delete(ext);
+      if(exts.has(ext))exts.delete(ext);else exts.add(ext);
+      syncExtChips();requestAnimationFrame(go);
+    };
+    const exc=document.createElement('button');
+    exc.className='ext-exc'+(negExts.has(ext)?' on':'');
+    exc.textContent='\\u2715';exc.title='Exclude — hide this type';
+    exc.onclick=ev=>{
+      ev.stopPropagation();
+      exts.delete(ext);
+      if(negExts.has(ext))negExts.delete(ext);else negExts.add(ext);
+      syncExtChips();requestAnimationFrame(go);
+    };
+    row.appendChild(nm);row.appendChild(ct);row.appendChild(inc);row.appendChild(exc);
+    frag.appendChild(row);
+  });
+  if(!entries.length){
+    const empty=document.createElement('div');
+    empty.style.cssText='padding:12px 10px;font-size:11px;color:var(--tx-d);text-align:center';
+    empty.textContent='No extensions found';
+    frag.appendChild(empty);
+  }
+  list.innerHTML='';list.appendChild(frag);
+  updateExtBtn();
+}
+function clearExtFilters(){exts.clear();negExts.clear();paintExtChips();requestAnimationFrame(go);}
+function onExtSearch(){paintExtChips();}
+function scheduleFilter(){clearTimeout(ft);exts.clear();negExts.clear();ft=setTimeout(go,150);}
 function scheduleHL(){clearTimeout(hlt);hlt=setTimeout(()=>{if(lastContent){document.getElementById('content').innerHTML=hl(lastContent);hitcount(lastContent);}},150);}
 function toggleFN(){
   fnOnly=!fnOnly;
   const b=document.getElementById('fnbtn');
-  b.textContent=fnOnly?'filename only':'full path';
-  b.classList.toggle('active',fnOnly);exts.clear();go();
+  b.textContent=fnOnly?'Filename Only':'Full Path';
+  b.classList.toggle('active',fnOnly);exts.clear();negExts.clear();requestAnimationFrame(go);
 }
 function toggleUN(){
   uniqueNames=!uniqueNames;
   document.getElementById('unbtn').classList.toggle('active',uniqueNames);
-  render(filtered);
+  requestAnimationFrame(()=>render(filtered));
 }
 function render(paths){
   if(uniqueNames){
@@ -944,7 +1065,7 @@ function render(paths){
     displayed=paths;
   }
   const suffix=(uniqueNames?' \u2192 '+displayed.length+' unique':'')+(activeFilter?' \u25b6 filtered':'');
-  document.getElementById('status').textContent=paths.length+' / '+all.length+' paths'+suffix;
+  document.getElementById('status').textContent=paths.length||all.length?paths.length+' / '+all.length+' paths'+suffix:'No Paths Loaded — Scan a Host or Load a File';
   const list=document.getElementById('pathList');list.innerHTML='';
   if(!displayed.length)return;
   const spacer=document.createElement('div');
@@ -1007,7 +1128,7 @@ function sel(el,path){
   lastContent='';
   // serve from cache if available
   if(previewCache.has(path)){showPreview(previewCache.get(path));return;}
-  document.getElementById('content').textContent='loading...';
+  document.getElementById('content').textContent='Loading...';
   activeCtrl=new AbortController();
   activeTid=setTimeout(()=>{if(activeCtrl)activeCtrl.abort();},35000);
   fetch('/cat?path='+encodeURIComponent(path)+'&proxy='+proxy(),{signal:activeCtrl.signal})
@@ -1018,16 +1139,16 @@ function sel(el,path){
     }).catch(e=>{
       clearTimeout(activeTid);activeCtrl=null;activeTid=null;
       const c=document.getElementById('content');
-      c.textContent=e.name==='AbortError'?'timed out reading file — use download to get it':'error reading file';
+      c.textContent=e.name==='AbortError'?'Timed Out Reading File — Use Download to Get It':'Error Reading File';
       document.getElementById('bottom').style.display='block';
     });
 }
 function dl(){
   if(!cur)return;
-  document.getElementById('status').textContent='[*] downloading: '+cur;
+  document.getElementById('status').textContent='[*] Downloading: '+cur;
   fetch('/download?path='+encodeURIComponent(cur)+'&proxy='+proxy())
     .then(r=>r.json()).then(d=>{
-      document.getElementById('status').innerHTML=d.ok?'<span class=ok>[+] saved: '+d.msg+'</span>':'<span class=err>[-] failed: '+d.msg+'</span>';
+      document.getElementById('status').innerHTML=d.ok?'<span class=ok>[+] Saved: '+d.msg+'</span>':'<span class=err>[-] Failed: '+d.msg+'</span>';
     });
 }
 function startDlPoll(){
@@ -1036,25 +1157,31 @@ function startDlPoll(){
     fetch('/dlstatus').then(r=>r.json()).then(d=>{
       const s=document.getElementById('status');
       if(d.running){
-        s.textContent='[*] downloading... '+d.done+'/'+d.total;
+        s.textContent='[*] Downloading... '+d.done+'/'+d.total;
       } else if(d.total>0){
         clearInterval(dlPollTimer);dlPollTimer=null;
         const msg=d.failed>0
-          ?'[+] download complete: '+d.done+' saved, '+d.failed+' failed'
-          :'[+] download complete: '+d.done+' file(s) saved';
+          ?'[+] Download Complete: '+d.done+' saved, '+d.failed+' failed'
+          :'[+] Download Complete: '+d.done+' file(s) saved';
         s.innerHTML='<span class=ok>'+msg+'</span>';
       }
     });
   },2000);
 }
 function downloadAll(){
-  if(!displayed.length){document.getElementById('status').textContent='nothing to download';return;}
+  if(!displayed.length){document.getElementById('status').textContent='Nothing to Download';return;}
+  document.getElementById('dlmodal-sub').textContent='Which folder would you like to save '+displayed.length+' file'+(displayed.length===1?'':'s')+' to?';
+  document.getElementById('dlmodal').style.display='flex';
+}
+function closeDlModal(){document.getElementById('dlmodal').style.display='none';}
+function startDlAll(extFolders){
+  closeDlModal();
   const n=displayed.length;
-  document.getElementById('status').textContent='[*] queuing '+n+' file(s) for download...';
+  document.getElementById('status').textContent='[*] Queuing '+n+' file(s) for download...';
   fetch('/downloadall',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({paths:displayed,proxy:proxy()===1})
+    body:JSON.stringify({paths:displayed,proxy:proxy()===1,extfolders:extFolders})
   }).then(r=>r.json()).then(d=>{
     const s=document.getElementById('status');
     if(d.ok){startDlPoll();}
@@ -1063,8 +1190,8 @@ function downloadAll(){
 }
 function clearRight(){
   cur=null;lastContent='';
-  document.getElementById('header').textContent='select a path';
-  document.getElementById('content').textContent='click a path to view its contents';
+  document.getElementById('header').textContent='Select a Path';
+  document.getElementById('content').textContent='Click a Path to View its Contents';
   document.getElementById('bottom').style.display='none';
   const old=document.getElementById('rightbar').querySelector('.hc');if(old)old.remove();
 }
@@ -1122,7 +1249,9 @@ def start_gui(creds, pathsfile=''):
             if not shares:
                 note = 'no readable shares'
                 combined = (result.stderr + result.stdout).lower()
-                if 'connection' in combined and ('refused' in combined or 'timed out' in combined or 'reset' in combined):
+                if 'logon_failure' in combined or 'logon failure' in combined or 'status_access_denied' in combined or ('authentication' in combined and 'fail' in combined):
+                    note = 'authentication failed — check credentials'
+                elif 'connection' in combined and ('refused' in combined or 'timed out' in combined or 'reset' in combined):
                     note = 'connection failed'
                 elif 'name or service not known' in combined or 'resolve' in combined or 'dns' in combined:
                     note = 'DNS resolution failed — set DNS server'
@@ -1293,6 +1422,7 @@ def start_gui(creds, pathsfile=''):
             if p.path == '/downloadall':
                 paths = body.get('paths', [])
                 use_proxy = bool(body.get('proxy', False))
+                ext_folders = bool(body.get('extfolders', False))
                 if not paths:
                     self.send_json({'ok': False, 'msg': 'no paths'})
                     return
@@ -1301,8 +1431,8 @@ def start_gui(creds, pathsfile=''):
                     dl_status[0] = {'running': True, 'done': 0, 'failed': 0, 'total': len(paths)}
                     lock = threading.Lock()
 
-                    local_dir = os.path.join('smblist', 'downloads')
-                    os.makedirs(local_dir, exist_ok=True)
+                    base_dir = os.path.join('smblist', 'downloads')
+                    os.makedirs(base_dir, exist_ok=True)
 
                     def download_one(path):
                         try:
@@ -1312,6 +1442,12 @@ def start_gui(creds, pathsfile=''):
                                 return
                             filepath = d.rstrip('/') + '/' + fname
                             safe_name = path.lstrip('/').replace('/', '_').replace(' ', '-')
+                            if ext_folders:
+                                ext = os.path.splitext(fname)[1].lstrip('.').lower() or 'no_ext'
+                                local_dir = os.path.join(base_dir, ext)
+                                os.makedirs(local_dir, exist_ok=True)
+                            else:
+                                local_dir = base_dir
                             local_path = os.path.join(local_dir, safe_name)
                             for attempt in range(3):
                                 run_cmd(['smbclient', share, '-U', creds, '-c',
