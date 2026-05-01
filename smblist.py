@@ -8,13 +8,13 @@ Usage:
   smblist.py -nxc <nxc_output>                 - just parse nxc into share list
   smblist.py <creds> -host <host|hosts.txt>    - run nxc then enumerate
   smblist.py <creds> -get <//host/share/file>  - download a specific file
-  smblist.py <creds> -gui                      - launch web gui (auto-loads smblist_* files)
+  smblist.py <creds> -gui [-dir <folder>]       - launch web gui (auto-loads smblist_* files)
   smblist.py <creds> [shares.txt] -o out.txt   - output to file and terminal
 
 creds format: domain/user%pass
 """
 
-import sys, os, re, subprocess, threading, webbrowser, json, time, queue
+import sys, os, re, subprocess, threading, webbrowser, json, time, queue, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
@@ -297,9 +297,10 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 #extlist{max-height:240px;overflow-y:auto;padding:3px 0}
 .ext-row{display:flex;align-items:center;padding:3px 8px;gap:5px;transition:background .08s}
 .ext-row:hover{background:var(--bg3)}
-.ext-name{font-family:var(--mono);font-size:11px;color:var(--tx-s);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ext-cnt{font-size:10px;color:var(--tx-d);min-width:28px;text-align:right;font-family:var(--mono);flex-shrink:0}
-.ext-inc,.ext-exc{width:20px;height:20px;border-radius:4px;border:1px solid var(--bd-s);background:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--tx-d);transition:all .1s;flex-shrink:0;font-family:var(--ui);padding:0}
+.ext-name{font-family:var(--mono);font-size:11px;color:var(--tx-s);flex-shrink:0;white-space:nowrap}
+.ext-desc{font-size:10px;color:var(--tx-d);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;margin-left:4px;min-width:0}
+.ext-lbl{display:flex;align-items:baseline;flex:1;overflow:hidden;min-width:0;gap:0}
+.ext-cnt{font-size:10px;color:var(--tx-d);min-width:28px;text-align:right;font-family:var(--mono);flex-shrink:0}.ext-inc,.ext-exc{width:20px;height:20px;border-radius:4px;border:1px solid var(--bd-s);background:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--tx-d);transition:all .1s;flex-shrink:0;font-family:var(--ui);padding:0}
 .ext-inc:hover{border-color:var(--green);color:var(--green);background:var(--green-bg)}
 .ext-exc:hover{border-color:var(--red);color:var(--red);background:var(--red-bg)}
 .ext-inc.on{background:var(--green-bg);border-color:var(--green);color:var(--green)}
@@ -449,6 +450,154 @@ body{font-family:var(--ui);background:var(--bg1);color:var(--tx);height:100vh;di
 </div>
 <div id=status>0 paths</div>
 <script>
+let _fileDescs={};
+const EXT_DESC={
+  // Office / Documents
+  doc:'Word 97-2003 Document',docx:'Word Document',dot:'Word Template',dotx:'Word Template',docm:'Word Macro-Enabled Document',
+  xls:'Excel 97-2003 Workbook',xlsx:'Excel Workbook',xlsm:'Excel Macro-Enabled Workbook',xlsb:'Excel Binary Workbook',xlt:'Excel Template',csv:'Comma-Separated Values',
+  ppt:'PowerPoint 97-2003 Presentation',pptx:'PowerPoint Presentation',pptm:'PowerPoint Macro-Enabled',pot:'PowerPoint Template',
+  mdb:'Access Database (legacy)',accdb:'Access Database',accde:'Access Compiled Database',
+  pub:'Publisher Document',vsd:'Visio Drawing',vsdx:'Visio Drawing (XML)',
+  odt:'OpenDocument Text',ods:'OpenDocument Spreadsheet',odp:'OpenDocument Presentation',odg:'OpenDocument Drawing',
+  one:'OneNote Notebook',onepkg:'OneNote Package',
+  // PDF / Print
+  pdf:'PDF Document',xps:'XML Paper Specification',oxps:'Open XPS Document',
+  // Text / Config / Code
+  txt:'Plain Text',log:'Log File',md:'Markdown',rst:'reStructuredText',nfo:'Info/Readme File',
+  ini:'INI Configuration',cfg:'Configuration File',conf:'Configuration File',config:'Configuration File',
+  xml:'XML Document',json:'JSON Data',yaml:'YAML Config',yml:'YAML Config',toml:'TOML Config',
+  properties:'Java Properties',env:'Environment Variables',
+  reg:'Windows Registry Export',inf:'Setup Information File',
+  bat:'Windows Batch Script',cmd:'Windows Command Script',ps1:'PowerShell Script',psm1:'PowerShell Module',psd1:'PowerShell Data File',
+  vbs:'VBScript',vbe:'Encoded VBScript',js:'JavaScript',jse:'Encoded JScript',wsf:'Windows Script File',wsh:'Windows Script Host',hta:'HTML Application',
+  sh:'Shell Script',bash:'Bash Script',zsh:'Zsh Script',fish:'Fish Script',
+  py:'Python Script',rb:'Ruby Script',pl:'Perl Script',php:'PHP Script',
+  cs:'C# Source',java:'Java Source',cpp:'C++ Source',c:'C Source',h:'C/C++ Header',
+  go:'Go Source',rs:'Rust Source',ts:'TypeScript Source',
+  sql:'SQL Script',
+  // Archives
+  zip:'ZIP Archive',rar:'RAR Archive','7z':'7-Zip Archive',tar:'TAR Archive',gz:'Gzip Archive',
+  bz2:'Bzip2 Archive',xz:'XZ Archive',cab:'Windows Cabinet',iso:'Disk Image',img:'Disk Image',
+  msu:'Windows Update Package',msp:'Windows Installer Patch',
+  // Executables / Libraries
+  exe:'Windows Executable',dll:'Dynamic Link Library',msi:'Windows Installer Package',
+  msc:'MMC Snap-in',cpl:'Control Panel Applet',ocx:'ActiveX Control',
+  sys:'Windows System Driver',drv:'Device Driver',vxd:'Virtual Device Driver',
+  scr:'Screen Saver / Script',com:'DOS Executable',
+  jar:'Java Archive',war:'Java Web Application',ear:'Java Enterprise Archive',
+  apk:'Android Package',ipa:'iOS App Package',appx:'Windows App Package',msix:'Windows App Package',
+  // Certificates / Keys / Credentials
+  pem:'PEM Certificate/Key',crt:'X.509 Certificate',cer:'X.509 Certificate',
+  pfx:'PKCS#12 Certificate+Key',p12:'PKCS#12 Certificate+Key',
+  key:'Private Key',pub:'Public Key',csr:'Certificate Signing Request',
+  kdbx:'KeePass Database',kdb:'KeePass Database (legacy)',
+  rdp:'Remote Desktop Connection',
+  id_rsa:'SSH Private Key',ppk:'PuTTY Private Key',
+  // Network / Security
+  pcap:'Packet Capture',pcapng:'Packet Capture (NG)',cap:'Packet Capture',
+  ovpn:'OpenVPN Config',
+  // Web
+  html:'HTML Document',htm:'HTML Document',xhtml:'XHTML Document',
+  css:'Cascading Stylesheet',
+  asp:'ASP Script',aspx:'ASP.NET Page',ashx:'ASP.NET Handler',asmx:'ASP.NET Web Service',
+  jsp:'Java Server Page',php3:'PHP3 Script',php4:'PHP4 Script',php5:'PHP5 Script',
+  // Email
+  msg:'Outlook Email Message',eml:'Email Message (RFC 822)',emlx:'Apple Mail Message',
+  pst:'Outlook Personal Storage',ost:'Outlook Offline Storage',mbox:'Mailbox File',
+  // Images
+  jpg:'JPEG Image',jpeg:'JPEG Image',png:'PNG Image',gif:'GIF Image',bmp:'Bitmap Image',
+  tif:'TIFF Image',tiff:'TIFF Image',ico:'Icon File',svg:'SVG Vector Image',
+  webp:'WebP Image',raw:'RAW Camera Image',cr2:'Canon RAW Image',nef:'Nikon RAW Image',
+  // Media
+  mp3:'MP3 Audio',wav:'WAV Audio',flac:'FLAC Audio',aac:'AAC Audio',ogg:'OGG Audio',wma:'Windows Media Audio',
+  mp4:'MP4 Video',avi:'AVI Video',mkv:'MKV Video',mov:'QuickTime Video',wmv:'Windows Media Video',
+  // Virtual Machines / Disk
+  vmdk:'VMware Disk Image',vhd:'Hyper-V Disk Image',vhdx:'Hyper-V Disk Image',
+  ova:'VMware Appliance',ovf:'VMware Config',vmx:'VMware Config',
+  vdi:'VirtualBox Disk Image',
+  // Databases
+  db:'SQLite / Generic Database',sqlite:'SQLite Database',sqlite3:'SQLite3 Database',
+  mdf:'SQL Server Data File',ldf:'SQL Server Log File',bak:'Database / File Backup',
+  // Dev / IDE
+  sln:'Visual Studio Solution',csproj:'C# Project',vbproj:'VB.NET Project',
+  vcxproj:'Visual C++ Project',proj:'MSBuild Project',
+  // Misc
+  tmp:'Temporary File',temp:'Temporary File',swp:'Vim Swap File',
+  lnk:'Windows Shortcut',url:'Internet Shortcut',
+  wim:'Windows Image File',ntds:'Active Directory Database',
+  pf:'Windows Prefetch',evt:'Windows Event Log (legacy)',evtx:'Windows Event Log',
+  dmp:'Memory Dump',mdmp:'Mini Memory Dump',
+  htpasswd:'Apache Password File',shadow:'Unix Shadow Password File',passwd:'Unix Password File',
+  // FoxPro / dBASE family
+  dbf:'dBASE/FoxPro Database Table',cdx:'FoxPro Compound Index',fpt:'FoxPro Table Memo',
+  prg:'FoxPro/dBASE Program Source',scx:'Visual FoxPro Form',frx:'Visual FoxPro Form Binary',
+  frt:'Visual FoxPro Report Binary',spr:'Visual FoxPro Screen Program',
+  fxp:'Visual FoxPro Compiled Program',pjx:'Visual FoxPro Project',pjt:'Visual FoxPro Project Memo',
+  mnx:'Visual FoxPro Menu',mnt:'Visual FoxPro Menu Memo',vcx:'Visual FoxPro Class Library',
+  vct:'Visual FoxPro Class Table',fll:'Visual FoxPro DLL Extension',
+  fpw:'FoxPro for Windows File',dbm:'Database Memo/Map File',ldb:'Access Database Lock File',
+  // Web / Fonts / Styles
+  cshtml:'ASP.NET Razor View',ascx:'ASP.NET User Control',asax:'ASP.NET Application File',
+  master:'ASP.NET Master Page',browser:'ASP.NET Browser Definition',
+  less:'LESS Stylesheet',xsl:'XSL Stylesheet',xslt:'XSLT Stylesheet',
+  ttf:'TrueType Font',otf:'OpenType Font',eot:'Embedded OpenType Font',
+  woff:'Web Open Font Format',woff2:'Web Open Font Format 2',
+  fon:'Bitmap Font File',pfb:'Printer Font Binary',pfm:'Printer Font Metrics',bdf:'Bitmap Font Distribution Format',
+  htc:'IE HTML Component',vue:'Vue.js Single-File Component',
+  // Windows / Group Policy / MSBuild
+  adm:'Group Policy Template (legacy)',admx:'Group Policy Admin Template',adml:'Group Policy Language File',
+  pol:'Group Policy Settings',targets:'MSBuild Targets File',manifest:'Application Manifest',
+  rsp:'Compiler Response File',mst:'Windows Installer Transform',mof:'WMI Object Format',
+  tlb:'COM Type Library',ocx_old:'ActiveX Control',mui:'Multilingual UI Resource',
+  pnf:'Precompiled Setup Information',cat:'Windows Security Catalog',
+  application:'ClickOnce Application Manifest',chm:'Compiled HTML Help',
+  hlp:'Windows Help File',gid:'Windows Help Index',cnt:'Help Contents File',
+  // Reports / Output
+  rpt:'Report File (Crystal Reports etc.)',rdl:'SQL Server Report Definition',
+  rdlc:'RDLC Report Definition',out:'Program Output/Log File',
+  prn:'Print Output/Spool File',rtf:'Rich Text Format',wpd:'WordPerfect Document',
+  // Dev / Build / Libraries
+  lib:'Static Link Library',exp:'Symbol Exports File',bin:'Binary Data File',
+  bas:'BASIC/VBA Module',so:'Linux Shared Library',idx:'Index File',
+  resx:'.NET Resource File',scc:'Source Code Control File',
+  ins:'InstallShield/Internet Settings',iss:'InstallShield Script',
+  inx:'Compiled InstallShield Script',xsd:'XML Schema Definition',dtd:'XML Document Type Definition',
+  xpi:'Firefox/Mozilla Extension',dtsx:'SSIS Data Package',
+  myd:'MySQL Data File',myi:'MySQL Index File',
+  svc:'WCF Service Definition',svclog:'WCF Service Trace Log',asmx_old:'ASP.NET Web Service',
+  vbp:'Visual Basic Project',vbr:'Visual Basic Registration File',
+  wbk:'Word Backup Document',wks:'Lotus 1-2-3 Worksheet',
+  // Certs / Security / Signatures
+  sig:'Digital Signature/Checksum File',hash:'Hash/Checksum File',lic:'License File',
+  // Fonts / Print
+  gpd:'Generic Printer Description',tbl:'Table/Translation File',
+  // Archives / Packages
+  rpm:'RPM Linux Package',wsp:'SharePoint Solution Package',imz:'Compressed Disk Image',
+  xpi_pkg:'Mozilla Extension Package',
+  // Audio
+  mid:'MIDI Audio',
+  // Misc identifiable
+  act:'ACT! Database / FoxPro Indexed Memo',tsk:'Task Scheduler Job File',
+  map:'Source Map File',seq:'Sequence File',dat:'Data File',
+  mht:'MHTML Web Archive',swf:'Adobe Flash Animation',
+  ntf:'Lotus Notes Template',stp:'STEP/ISO 3D CAD File',
+  app:'Application File',tag:'Tag Index File',
+  mo:'GNU Gettext Machine Object',lrc:'Lyrics/Locale Resource File',
+  nlp:'Natural Language Data File',tab:'Tab-Delimited Data File',
+  msk:'Mask File',cache:'Application Cache File',lan:'Language Resource File',
+  sep:'Separator/Report File',policy:'.NET Security Policy',
+  udf:'Universal Disk Format / User Function',rcf:'Remote Configuration File',
+  rdg:'Remote Desktop Connection Group',scexe:'HP Smart Component',
+  osd:'Open Software Description',tbk:'Toolbar/Backup File',
+  bgi:'Borland Graphics Interface Driver',ptx:'Printer Descriptor File',
+  wpd_wp:'WordPerfect Document',cdj:'Canon Driver Job File',
+  sft:'SoftFont/Streaming Media File',aas:'Authorware Shocked Archive',
+  // Month-named data (common in older business apps)
+  jan:'January Data File',feb:'February Data File',mar:'March Data File',
+  apr:'April Data File',may:'May Data File',jun:'June Data File',
+  jul:'July Data File',aug:'August Data File',sep2:'September Data File',
+  oct:'October Data File',nov:'November Data File',dec:'December Data File',
+};
 const ROW_H=20;
 let all=[],cur=null,ft=null,hlt=null,lastContent='',filtered=[],displayed=[],exts=new Set(),negExts=new Set(),fnOnly=true,uniqueNames=false;
 let pollTimer=null,dlPollTimer=null;
@@ -479,8 +628,9 @@ let allPaths=[];
 let allJobs={};
 let dragState=null;   // {hostname, sourceGroupId}  (null = ungrouped)
 
-function saveGroups(){try{localStorage.setItem('smblist_g',JSON.stringify(groups));}catch(e){}}
-function loadGroups(){try{groups=JSON.parse(localStorage.getItem('smblist_g')||'[]');}catch(e){groups=[];}}
+function saveGroups(){
+  fetch('/savegroups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(groups)}).catch(()=>{});
+}
 
 // extract unique hostnames from paths in sorted order
 function hostsFromPaths(paths){
@@ -495,13 +645,19 @@ function ungroupedHosts(hosts){
 }
 
 // ── init ──
-loadGroups();
 function loadPaths(){
   document.getElementById('status').innerHTML='<span class=spinner></span> Loading...';
   document.getElementById('treebody').innerHTML='<div style="padding:16px 14px;font-size:11px;color:var(--tx-d);display:flex;align-items:center;gap:8px"><span class=spinner></span>Loading Hosts...</div>';
-  fetch('/paths').then(r=>r.json()).then(d=>{allPaths=d;all=d;exts.clear();negExts.clear();try{go();}catch(e){console.error('go:',e);}renderTree();});
+  Promise.all([
+    fetch('/paths').then(r=>r.json()),
+    fetch('/groups').then(r=>r.json())
+  ]).then(([paths,grps])=>{
+    groups=grps;allPaths=paths;all=paths;exts.clear();negExts.clear();
+    try{go();}catch(e){console.error('go:',e);}renderTree();
+  });
 }
 loadPaths();
+fetch('/extdescs').then(r=>r.json()).then(d=>{_fileDescs=d;}).catch(()=>{});
 fetch('/jobs').then(r=>r.json()).then(d=>{
   allJobs=d;renderJobs(d);
   if(Object.values(d).some(j=>j.status!=='done'&&j.status!=='error'))startPolling();
@@ -998,19 +1154,35 @@ function rebuildExts(paths){
   const counts={};
   paths.forEach(p=>{const e=getExt(p);if(e)counts[e]=(counts[e]||0)+1;});
   _extCounts=counts;
+  const unknown=Object.keys(counts).filter(e=>!EXT_DESC[e]&&!_fileDescs[e]);
+  if(unknown.length){
+    fetch('/lookupexts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({exts:unknown})})
+      .then(r=>r.json()).then(d=>{
+        if(d.queued>0){
+          setTimeout(()=>{
+            fetch('/extdescs').then(r=>r.json()).then(data=>{_fileDescs=data;paintExtChips();}).catch(()=>{});
+          },6000);
+        }
+      }).catch(()=>{});
+  }
   paintExtChips();
 }
 function paintExtChips(){
   const inp=document.getElementById('extsearch');
   const search=inp?inp.value.toLowerCase().trim():'';
   let entries=Object.entries(_extCounts).sort((a,b)=>b[1]-a[1]);
-  if(search)entries=entries.filter(([ext])=>ext.includes(search));
+  if(search)entries=entries.filter(([ext])=>ext.includes(search)||(EXT_DESC[ext]||_fileDescs[ext]||'').toLowerCase().includes(search));
   const list=document.getElementById('extlist');
   const frag=document.createDocumentFragment();
   entries.slice(0,300).forEach(([ext,cnt])=>{
     const row=document.createElement('div');
     row.className='ext-row';row.dataset.ext=ext;
+    const lbl=document.createElement('span');lbl.className='ext-lbl';
     const nm=document.createElement('span');nm.className='ext-name';nm.textContent='.'+ext;
+    lbl.appendChild(nm);
+    const ds=document.createElement('span');ds.className='ext-desc';
+    ds.textContent=EXT_DESC[ext]||_fileDescs[ext]||'';
+    lbl.appendChild(ds);
     const ct=document.createElement('span');ct.className='ext-cnt';ct.textContent=cnt;
     const inc=document.createElement('button');
     inc.className='ext-inc'+(exts.has(ext)?' on':'');
@@ -1030,7 +1202,7 @@ function paintExtChips(){
       if(negExts.has(ext))negExts.delete(ext);else negExts.add(ext);
       syncExtChips();requestAnimationFrame(go);
     };
-    row.appendChild(nm);row.appendChild(ct);row.appendChild(inc);row.appendChild(exc);
+    row.appendChild(lbl);row.appendChild(ct);row.appendChild(inc);row.appendChild(exc);
     frag.appendChild(row);
   });
   if(!entries.length){
@@ -1211,14 +1383,44 @@ def start_gui(creds, pathsfile=''):
     SCAN_WORKERS = 15
     scan_queue = queue.Queue()
 
+    ext_descs = {}
+    ext_descs_lock = threading.Lock()
+    ext_descs_file = 'smblist_extensions'
+    if os.path.exists(ext_descs_file):
+        try:
+            with open(ext_descs_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        k = k.strip().lower()
+                        if k:
+                            ext_descs[k] = v.strip()
+        except Exception:
+            pass
+
+    gui_groups = []
+    gui_groups_lock = threading.Lock()
+    gui_groups_file = 'smblist_myfolders'
+    if os.path.exists(gui_groups_file):
+        try:
+            with open(gui_groups_file) as f:
+                gui_groups = json.load(f)
+        except Exception:
+            gui_groups = []
+
+    # names that start with smblist_ but are not path lists
+    _SMBLIST_NON_PATH = {'smblist_extensions', 'smblist_myfolders'}
+
     if pathsfile and os.path.exists(pathsfile):
         with open(pathsfile) as f:
             live_paths = [l.strip() for l in f if l.strip()]
     else:
-        # auto-load any smblist_* files in cwd
+        # auto-load any smblist_<host> files in cwd
+        print(f'[*] scanning for smblist_* files in: {os.path.abspath(".")}', file=sys.stderr)
         seen = set()
         for fname in sorted(os.listdir('.')):
-            if fname.startswith('smblist_') and os.path.isfile(fname):
+            if fname.startswith('smblist_') and fname not in _SMBLIST_NON_PATH and os.path.isfile(fname):
                 try:
                     with open(fname) as f:
                         for line in f:
@@ -1407,6 +1609,16 @@ def start_gui(creds, pathsfile=''):
                 else:
                     self.send_json({'ok': False, 'msg': result.stderr.strip()})
 
+            elif p.path == '/groups':
+                with gui_groups_lock:
+                    data = list(gui_groups)
+                self.send_json(data)
+
+            elif p.path == '/extdescs':
+                with ext_descs_lock:
+                    data = dict(ext_descs)
+                self.send_json(data)
+
             elif p.path == '/dlstatus':
                 self.send_json(dl_status[0])
 
@@ -1470,6 +1682,60 @@ def start_gui(creds, pathsfile=''):
 
                 threading.Thread(target=do_dl_all, daemon=True).start()
                 self.send_json({'ok': True, 'count': len(paths)})
+
+            elif p.path == '/savegroups':
+                new_groups = body if isinstance(body, list) else []
+                with gui_groups_lock:
+                    gui_groups.clear()
+                    gui_groups.extend(new_groups)
+                try:
+                    with open(gui_groups_file, 'w') as fh:
+                        json.dump(new_groups, fh)
+                except Exception:
+                    pass
+                self.send_json({'ok': True})
+
+            elif p.path == '/lookupexts':
+                raw = body.get('exts', [])
+                with ext_descs_lock:
+                    to_fetch = [e for e in raw
+                                if isinstance(e, str) and re.match(r'^[a-z0-9_]+$', e)
+                                and len(e) <= 20 and e not in ext_descs]
+                self.send_json({'queued': len(to_fetch)})
+
+                def _fetch_exts(exts_list):
+                    for ext in exts_list:
+                        with ext_descs_lock:
+                            if ext in ext_descs:
+                                continue
+                        try:
+                            req = urllib.request.Request(
+                                f'https://fileinfo.com/extension/{ext}',
+                                headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'}
+                            )
+                            html = urllib.request.urlopen(req, timeout=8).read().decode('utf-8', errors='replace')
+                            desc = None
+                            m = re.search(r'<meta name="description" content="([^"]{10,180})"', html)
+                            if m:
+                                desc = m.group(1).strip()
+                                desc = re.sub(r'\s+', ' ', desc)
+                            if not desc:
+                                m2 = re.search(r'<h1[^>]*>([^<]+?)\s+File</h1>', html, re.IGNORECASE)
+                                if m2:
+                                    desc = m2.group(1).strip() + ' File'
+                            if desc:
+                                with ext_descs_lock:
+                                    ext_descs[ext] = desc
+                                with open(ext_descs_file, 'a') as fh:
+                                    fh.write(f'{ext}={desc}\n')
+                                    fh.flush()
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+
+                if to_fetch:
+                    threading.Thread(target=_fetch_exts, args=(to_fetch,), daemon=True).start()
+
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -1517,7 +1783,21 @@ def main():
         run_smblist(shares, creds, outfile=outfile)
 
     elif args[0] == '-gui':
-        pathsfile = args[1] if len(args) > 1 else ''
+        gui_args = args[1:]
+        pathsfile = ''
+        if '-dir' in gui_args:
+            idx = gui_args.index('-dir')
+            if idx + 1 < len(gui_args):
+                target_dir = gui_args[idx + 1]
+                try:
+                    os.chdir(target_dir)
+                    print(f'[*] working directory: {os.path.abspath(".")}', file=sys.stderr)
+                except Exception as e:
+                    print(f'[-] cannot cd to {target_dir!r}: {e}', file=sys.stderr)
+                    sys.exit(1)
+                gui_args = [a for i, a in enumerate(gui_args) if i != idx and i != idx + 1]
+        if gui_args and not gui_args[0].startswith('-'):
+            pathsfile = gui_args[0]
         start_gui(creds, pathsfile)
 
     elif args[0] == '-get':
