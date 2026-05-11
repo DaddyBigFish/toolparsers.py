@@ -4,7 +4,7 @@ import socket
 import xml.etree.ElementTree as ET
 from rich.console import Console
 from rich.table import Table
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from io import StringIO
 
 current_hostname = socket.gethostname()
@@ -12,6 +12,7 @@ current_hostname = socket.gethostname()
 filename = None
 basic_mode = False
 expired_mode = False
+imminent_mode = False
 ips_mode = False
 weak_mode = False
 selfsigned_mode = False
@@ -30,6 +31,11 @@ while i < len(sys.argv):
 
     if arg in ("--expired", "-e"):
         expired_mode = True
+        i += 1
+        continue
+
+    if arg in ("--imminent", "-im"):
+        imminent_mode = True
         i += 1
         continue
 
@@ -83,6 +89,7 @@ while i < len(sys.argv):
     print("Options:", file=sys.stderr)
     print("  -b, --basic                     Basic text output", file=sys.stderr)
     print("  -e, --expired                   Show only expired certificates", file=sys.stderr)
+    print("  -im, --imminent                 Show only certificates expiring within 40 days", file=sys.stderr)
     print("  -i, --ips                       List only matching IP:port lines", file=sys.stderr)
     print("  -w, --weak                      Show only hosts with weak ciphers", file=sys.stderr)
     print("  --selfsigned PATTERN [PATTERN2] Filter by issuer/subject substring (case-insensitive)", file=sys.stderr)
@@ -234,6 +241,17 @@ def is_expired(date_str):
     except:
         return False
 
+def is_imminent(date_str):
+    if not date_str:
+        return False
+    try:
+        date_obj = datetime.strptime(date_str, "%b %d %H:%M:%S %Y GMT")
+        date_obj = date_obj.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return now < date_obj <= now + timedelta(days=40)
+    except:
+        return False
+
 def has_weak_cipher(cipher_lines):
     weak = []
     for line in cipher_lines:
@@ -275,6 +293,8 @@ if ips_mode:
             continue
         if expired_mode and not is_expired(not_after):
             continue
+        if imminent_mode and not is_imminent(not_after):
+            continue
         if weak_mode and not has_weak_cipher(sections.get("Supported Ciphers", [])):
             continue
         if not matches_selfsigned(issuer, subject):
@@ -297,6 +317,9 @@ for test in root.findall("ssltest"):
         continue
 
     if expired_mode and not is_expired(not_after):
+        continue
+
+    if imminent_mode and not is_imminent(not_after):
         continue
 
     weak_ciphers = None
